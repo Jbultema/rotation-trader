@@ -32,7 +32,7 @@ def test_monthly_rebalance_marks_only_last_session_of_each_month() -> None:
     selected = dates[mask]
     assert selected[0] == pd.Timestamp("2026-01-30")
     assert selected[1] == pd.Timestamp("2026-02-27")
-    assert selected[2] == pd.Timestamp("2026-03-10")
+    assert len(selected) == 2
 
 
 def test_rotation_strategy_is_long_only_latched_and_bounded() -> None:

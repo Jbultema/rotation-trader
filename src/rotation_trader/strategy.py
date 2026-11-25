@@ -432,25 +432,17 @@ def build_strategy(
 
 
 def rebalance_mask(index: pd.DatetimeIndex, cadence: str) -> pd.Series:
-    sessions = pd.Series(False, index=index)
-    if cadence == "monthly":
-        positions = (
-            pd.Series(np.arange(len(index)), index=index).groupby([index.year, index.month]).max()
-        )
-        sessions.iloc[positions.to_numpy(dtype=int)] = True
-    elif cadence in {"weekly", "biweekly"}:
-        iso = index.isocalendar()
-        positions = (
-            pd.Series(np.arange(len(index)), index=index)
-            .groupby([iso.year.to_numpy(), iso.week.to_numpy()])
-            .max()
-        )
-        chosen = positions.to_numpy(dtype=int)
-        if cadence == "biweekly":
-            chosen = chosen[::2]
-        sessions.iloc[chosen] = True
-    else:
+    from rotation_trader.scheduling import planned_period_ends
+
+    if cadence not in {"monthly", "weekly", "biweekly"}:
         raise ValueError(f"Unsupported cadence: {cadence}")
+    if index.empty:
+        return pd.Series(False, index=index)
+    planned = planned_period_ends(index.min().year, index.max().year, cadence)
+    sessions = pd.Series(index.isin(planned), index=index)
+    if cadence == "biweekly":
+        weeks = index.to_period("W-FRI").asi8
+        sessions &= (weeks - weeks[0]) % 2 == 0
     return sessions
 
 
