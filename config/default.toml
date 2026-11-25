@@ -1,0 +1,35 @@
+[data]
+start = "1998-12-22"
+benchmark = "SPY"
+stable_sectors = ["XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY"]
+extension_sectors = ["XLC", "XLRE"]
+context_tickers = ["RSP", "IWM", "QQQ", "SMH", "HYG", "LQD", "IEF", "TLT", "DBC", "GLD", "UUP"]
+maximum_staleness_sessions = 2
+minimum_primary_coverage = 0.98
+
+[execution]
+initial_capital = 100000.0
+commission_bps = 5.0
+slippage_bps = 5.0
+minimum_trade_weight = 0.005
+
+[research]
+development_end = "2011-12-30"
+validation_start = "2012-01-03"
+validation_end = "2018-12-31"
+holdout_start = "2019-01-02"
+holdout_end = "2023-12-29"
+forward_diagnostic_start = "2024-01-02"
+minimum_history_sessions = 252
+bootstrap_samples = 2000
+bootstrap_block_sessions = 21
+pbo_partitions = 8
+random_seed = 20261124
+
+[promotion]
+minimum_development_cagr = 0.06
+minimum_validation_cagr = 0.06
+minimum_validation_sharpe = 0.45
+maximum_validation_drawdown = -0.35
+maximum_annual_turnover = 12.0
+minimum_positive_walk_forward_windows = 0.60

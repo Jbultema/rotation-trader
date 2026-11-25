@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.pytest_cache/
+.ruff_cache/
+.venv/
+dist/
+__pycache__/
+*.py[cod]
+data/raw/
+data/cache/
+reports/latest/
+reports/runs/
+reports/shadow/
+reports/*.log
