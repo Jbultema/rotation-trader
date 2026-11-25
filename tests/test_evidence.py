@@ -1,10 +1,15 @@
+import numpy as np
 import pandas as pd
 
 from rotation_trader.evidence import (
     annual_evidence,
     family_evidence,
     parameter_neighborhood,
+    point_in_time_market_states,
     preholdout_pareto_frontier,
+    regime_break_event_evidence,
+    rolling_outperformance_evidence,
+    state_conditioned_evidence,
 )
 
 
@@ -88,3 +93,51 @@ def test_pareto_frontier_excludes_strictly_dominated_variant() -> None:
     result = preholdout_pareto_frontier(frame)
 
     assert result["variant_id"].tolist() == ["strong"]
+
+
+def test_point_in_time_states_and_break_reports_separate_normal_from_stress() -> None:
+    dates = pd.bdate_range("2018-01-02", periods=1_200)
+    close = pd.Series(np.geomspace(100.0, 180.0, len(dates)), index=dates)
+    close.iloc[-120:] = np.geomspace(close.iloc[-121], 100.0, 120)
+    states = point_in_time_market_states(close)
+    spy = close.pct_change(fill_method=None).fillna(0.0)
+    protected = spy.where(~states["market_state"].eq("break"), 0.0)
+    returns = {"candidate": protected, "spy_buy_hold": spy}
+
+    conditioned = state_conditioned_evidence(
+        returns,
+        states,
+        benchmark_name="spy_buy_hold",
+    )
+    events = regime_break_event_evidence(
+        returns,
+        states,
+        benchmark_name="spy_buy_hold",
+    )
+
+    assert states.iloc[-1]["market_state"] == "break"
+    assert set(conditioned["market_state"]) == {"normal", "transition", "break"}
+    break_row = conditioned.loc[
+        conditioned["market_state"].eq("break")
+        & conditioned["strategy"].eq("candidate")
+    ].iloc[0]
+    assert break_row["annualized_excess_vs_spy"] > 0.0
+    assert {"lead_in", "break"}.issubset(set(events["phase"]))
+
+
+def test_rolling_outperformance_reports_multiple_buy_and_hold_benchmarks() -> None:
+    dates = pd.bdate_range("2020-01-02", periods=800)
+    returns = {
+        "candidate": pd.Series(0.0005, index=dates),
+        "spy_buy_hold": pd.Series(0.0003, index=dates),
+        "qqq_buy_hold": pd.Series(0.0004, index=dates),
+    }
+
+    result = rolling_outperformance_evidence(
+        returns,
+        benchmark_names=("spy_buy_hold", "qqq_buy_hold"),
+    )
+
+    candidate = result.loc[result["strategy"].eq("candidate")]
+    assert set(candidate["benchmark"]) == {"spy_buy_hold", "qqq_buy_hold"}
+    assert candidate["beat_share"].eq(1.0).all()

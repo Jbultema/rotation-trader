@@ -22,6 +22,7 @@ class SelectionResult:
 
 def period_masks(index: pd.DatetimeIndex, config: ResearchConfig) -> dict[str, pd.Series]:
     return {
+        "full_history": pd.Series(True, index=index),
         "development": pd.Series(index <= pd.Timestamp(config.development_end), index=index),
         "validation": pd.Series(
             (index >= pd.Timestamp(config.validation_start))

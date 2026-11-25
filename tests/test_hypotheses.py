@@ -14,7 +14,9 @@ def test_registry_is_large_unique_and_rotation_specific_outside_controls() -> No
     )
 
     registry = registry_frame(variants)
-    assert set(registry["research_wave"]) == {1, 2, 3}
+    assert set(registry["research_wave"]) == {1, 2, 3, 4, 5}
+    assert len(registry.loc[registry["research_wave"].eq(4)]) == 480
+    assert len(registry.loc[registry["research_wave"].eq(5)]) == 648
     assert {
         "rank_crossing_event",
         "sector_pair_transition",

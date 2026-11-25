@@ -15,8 +15,13 @@ from rotation_trader.evidence import (
     annual_evidence,
     family_evidence,
     parameter_neighborhood,
+    point_in_time_market_states,
     preholdout_pareto_frontier,
+    preholdout_regime_diagnostics,
+    regime_break_event_evidence,
     regime_evidence,
+    rolling_outperformance_evidence,
+    state_conditioned_evidence,
 )
 from rotation_trader.hypotheses import generate_registered_variants, registry_frame
 from rotation_trader.metrics import performance_metrics
@@ -75,6 +80,7 @@ def run_research(
         if ticker in prices["Close"].columns
     ]
     context_close = prices["Close"][context_symbols].reindex(close.index)
+    context_open = prices["Open"][context_symbols].reindex(close.index)
     cash_yield = prices["Close"][config.data.cash_yield_ticker].reindex(close.index)
     common_start = max(close[ticker].first_valid_index() for ticker in sectors)
     analysis_start_position = (
@@ -88,6 +94,7 @@ def run_research(
     benchmark_close = benchmark_close.loc[analysis_start:]
     benchmark_open = benchmark_open.loc[analysis_start:]
     context_close = context_close.loc[analysis_start:]
+    context_open = context_open.loc[analysis_start:]
     cash_returns = _cash_returns_from_annual_yield(cash_yield.loc[analysis_start:])
     if close.isna().any(axis=None) or adjusted_open.isna().any(axis=None):
         raise ValueError("Primary stable-sector history contains gaps after the research warmup.")
@@ -106,6 +113,21 @@ def run_research(
         adjusted_open,
         cost_bps=config.execution.total_one_way_cost_bps,
     )
+    simple_buy_hold_results: dict[str, BacktestResult] = {
+        "spy_buy_hold": benchmark_result,
+        "equal_weight_sectors": equal_sector_result,
+    }
+    for ticker in ("QQQ", "RSP"):
+        if ticker in context_open:
+            simple_buy_hold_results[f"{ticker.lower()}_buy_hold"] = _benchmark_backtest(
+                context_open[ticker],
+                cost_bps=config.execution.total_one_way_cost_bps,
+            )
+    for ticker in sectors:
+        simple_buy_hold_results[f"{ticker.lower()}_buy_hold"] = _benchmark_backtest(
+            adjusted_open[ticker],
+            cost_bps=config.execution.total_one_way_cost_bps,
+        )
     swing_spec = next(
         variant for variant in variants if variant.family == "comparator_swing_dual_momentum"
     )
@@ -123,6 +145,8 @@ def run_research(
     preholdout_end = pd.Timestamp(config.research.validation_end)
     swing_preholdout = swing_result.net_returns.loc[:preholdout_end]
     benchmark_preholdout = benchmark_result.net_returns.loc[:preholdout_end]
+    market_states = point_in_time_market_states(benchmark_close)
+    preholdout_states = market_states.loc[:preholdout_end]
     registry_updates: dict[str, dict[str, float]] = {}
 
     ordered = [swing_spec, *[variant for variant in variants if variant != swing_spec]]
@@ -161,6 +185,11 @@ def run_research(
         registry_updates[variant.variant_id] = {
             "preholdout_return_correlation_to_swing": correlation,
             "walk_forward_positive_share": float(stability["positive_window_share"]),
+            **preholdout_regime_diagnostics(
+                candidate_preholdout,
+                benchmark_preholdout,
+                preholdout_states,
+            ),
         }
         if position % 100 == 0 or position == len(ordered):
             report(f"Evaluated {position}/{len(ordered)} variants without opening holdout metrics.")
@@ -179,6 +208,12 @@ def run_research(
         preholdout_metrics,
         registry,
         config.promotion,
+    )
+    selection_scores = _add_regime_robust_scores(
+        selection_scores,
+        registry,
+        benchmark_result,
+        config,
     )
     selection_scores.to_csv(run_dir / "preholdout_selection_scores.csv", index=False)
     family_evidence(selection_scores).to_csv(
@@ -199,6 +234,19 @@ def run_research(
         else wave_three_scores.iloc[0]
     )
     allocation_timing_challenger_id = str(challenger_row["variant_id"])
+    wave_four_scores = selection_scores.loc[
+        selection_scores["research_wave"].ge(4)
+    ].sort_values(
+        ["regime_gate_passed", "regime_robust_score"],
+        ascending=[False, False],
+    )
+    wave_four_eligible = wave_four_scores.loc[wave_four_scores["regime_gate_passed"]]
+    regime_challenger_row = (
+        wave_four_eligible.iloc[0]
+        if not wave_four_eligible.empty
+        else wave_four_scores.iloc[0]
+    )
+    regime_challenger_id = str(regime_challenger_row["variant_id"])
     selection_payload = {
         "schema_version": 1,
         "record_type": "frozen_preholdout_selection",
@@ -210,6 +258,10 @@ def run_research(
         "allocation_timing_challenger_id": allocation_timing_challenger_id,
         "allocation_timing_challenger_gate_passed": bool(
             challenger_row["pre_holdout_gate_passed"]
+        ),
+        "regime_robust_challenger_id": regime_challenger_id,
+        "regime_robust_challenger_gate_passed": bool(
+            regime_challenger_row["regime_gate_passed"]
         ),
         "development_end": config.research.development_end,
         "validation_end": config.research.validation_end,
@@ -235,6 +287,7 @@ def run_research(
     if selection.selected_variant_id is not None:
         selected_ids.add(selection.selected_variant_id)
     selected_ids.add(allocation_timing_challenger_id)
+    selected_ids.add(regime_challenger_id)
     selected_ids.update(
         registry.loc[registry["family"].str.startswith("comparator_"), "variant_id"].tolist()
     )
@@ -247,13 +300,10 @@ def run_research(
                 config.research,
             )
         )
-    for name, result in (
-        ("benchmark_spy_buy_hold", benchmark_result),
-        ("benchmark_equal_weight_sectors", equal_sector_result),
-    ):
+    for name, result in simple_buy_hold_results.items():
         all_metric_rows.extend(
             evaluate_periods(
-                name,
+                f"benchmark_{name}",
                 result.net_returns,
                 result.one_way_turnover,
                 config.research,
@@ -261,6 +311,10 @@ def run_research(
         )
     all_metrics = pd.DataFrame(all_metric_rows)
     all_metrics.to_csv(run_dir / "selected_and_family_metrics.csv", index=False)
+    all_metrics.loc[all_metrics["variant_id"].str.startswith("benchmark_")].to_csv(
+        run_dir / "simple_buy_hold_metrics.csv",
+        index=False,
+    )
 
     preholdout_columns = returns_by_variant.index <= preholdout_end
     pbo = combinatorial_pbo(
@@ -278,11 +332,15 @@ def run_research(
         "preholdout_eligible_variants": selection.eligible_variants,
         "pbo": pbo,
         "promotion_status": "no_preholdout_candidate",
-        "protocol_phase": "post_holdout_adversarial_wave_3",
+        "protocol_phase": "post_holdout_adversarial_wave_5",
         "eligible_for_pristine_historical_promotion": False,
         "allocation_timing_challenger_id": allocation_timing_challenger_id,
         "allocation_timing_challenger_preholdout_gate_passed": bool(
             challenger_row["pre_holdout_gate_passed"]
+        ),
+        "regime_robust_challenger_id": regime_challenger_id,
+        "regime_robust_challenger_preholdout_gate_passed": bool(
+            regime_challenger_row["regime_gate_passed"]
         ),
     }
     champion_run: StrategyRun | None = None
@@ -429,12 +487,99 @@ def run_research(
         challenger_run.diagnostics.to_parquet(
             run_dir / "allocation_timing_challenger_diagnostics.parquet"
         )
+        regime_spec = next(
+            variant for variant in variants if variant.variant_id == regime_challenger_id
+        )
+        regime_run, regime_result = _run_variant(
+            cache,
+            adjusted_open,
+            regime_spec,
+            config,
+            cash_returns=cash_returns,
+        )
+        regime_preholdout = regime_result.net_returns.loc[:preholdout_end]
+        regime_decision = _latest_decision(regime_spec, regime_run)
+        regime_bootstrap: dict[str, dict[str, object]] = {}
+        for benchmark_name in (
+            "spy_buy_hold",
+            "qqq_buy_hold",
+            "rsp_buy_hold",
+            "equal_weight_sectors",
+        ):
+            if benchmark_name not in simple_buy_hold_results:
+                continue
+            comparator = simple_buy_hold_results[benchmark_name].net_returns
+            regime_bootstrap[benchmark_name] = {
+                "preholdout": paired_block_bootstrap(
+                    regime_preholdout,
+                    comparator.loc[:preholdout_end],
+                    samples=config.research.bootstrap_samples,
+                    block_sessions=config.research.bootstrap_block_sessions,
+                    seed=config.research.random_seed + 10,
+                ),
+                "holdout": paired_block_bootstrap(
+                    regime_result.net_returns.reindex(holdout_index),
+                    comparator.reindex(holdout_index),
+                    samples=config.research.bootstrap_samples,
+                    block_sessions=config.research.bootstrap_block_sessions,
+                    seed=config.research.random_seed + 11,
+                ),
+            }
+        summary["regime_robust_challenger"] = {
+            "variant_id": regime_challenger_id,
+            "family": regime_spec.family,
+            "preholdout_gate_passed": bool(regime_challenger_row["regime_gate_passed"]),
+            "prospective_only": True,
+            "specification": asdict(regime_spec),
+            "latest_decision": regime_decision,
+            "period_metrics": all_metrics.loc[
+                all_metrics["variant_id"].eq(regime_challenger_id)
+            ].to_dict(orient="records"),
+            "selection_evidence": {
+                name: float(regime_challenger_row[name])
+                for name in (
+                    "regime_robust_score",
+                    "development_excess_cagr_vs_spy",
+                    "validation_excess_cagr_vs_spy",
+                    "normal_annualized_excess",
+                    "transition_annualized_excess",
+                    "break_annualized_excess",
+                    "worst_state_annualized_excess",
+                )
+            },
+            "bootstrap_vs_buy_hold": regime_bootstrap,
+            "behavioral_distinctness_from_swing": behavioral_similarity(
+                regime_preholdout,
+                swing_preholdout,
+                regime_run.target_weights.loc[:preholdout_end],
+                swing_run.target_weights.loc[:preholdout_end],
+            ),
+            "timing_history": _timing_history(regime_run, config),
+        }
+        regime_run.target_weights.to_parquet(
+            run_dir / "regime_robust_challenger_weights.parquet"
+        )
+        regime_run.diagnostics.to_parquet(
+            run_dir / "regime_robust_challenger_diagnostics.parquet"
+        )
+        regime_result.net_returns.rename("net_return").to_frame().to_parquet(
+            run_dir / "regime_robust_challenger_returns.parquet"
+        )
         comparison_returns = {
             "rotation_candidate": champion_result.net_returns,
             "allocation_timing_challenger": challenger_result.net_returns,
+            "regime_robust_challenger": regime_result.net_returns,
             "swing_sector_control": swing_result.net_returns,
-            "spy_buy_hold": benchmark_result.net_returns,
-            "equal_weight_sectors": equal_sector_result.net_returns,
+            **{
+                name: result.net_returns
+                for name, result in simple_buy_hold_results.items()
+                if name in {
+                    "spy_buy_hold",
+                    "qqq_buy_hold",
+                    "rsp_buy_hold",
+                    "equal_weight_sectors",
+                }
+            },
         }
         pd.DataFrame(comparison_returns).to_parquet(run_dir / "comparison_returns.parquet")
         annual_evidence(comparison_returns).to_csv(
@@ -445,6 +590,25 @@ def run_research(
             run_dir / "regime_comparison.csv",
             index=False,
         )
+        market_states.to_csv(run_dir / "market_state_history.csv", index_label="date")
+        state_conditioned_evidence(
+            comparison_returns,
+            market_states,
+            benchmark_name="spy_buy_hold",
+        ).to_csv(run_dir / "state_conditioned_comparison.csv", index=False)
+        regime_break_event_evidence(
+            comparison_returns,
+            market_states,
+            benchmark_name="spy_buy_hold",
+        ).to_csv(run_dir / "regime_break_events.csv", index=False)
+        rolling_outperformance_evidence(
+            comparison_returns,
+            benchmark_names=tuple(
+                name
+                for name in ("spy_buy_hold", "qqq_buy_hold", "rsp_buy_hold")
+                if name in comparison_returns
+            ),
+        ).to_csv(run_dir / "rolling_outperformance.csv", index=False)
         comparison_contract = {
             "schema_version": 1,
             "system": "rotation-trader",
@@ -459,14 +623,18 @@ def run_research(
             "leadership_state": decision["leadership_state"],
             "historical_gates_passed": historical_gates_passed,
             "allocation_timing_challenger": summary["allocation_timing_challenger"],
+            "regime_robust_challenger": summary["regime_robust_challenger"],
             "behavioral_distinctness_from_swing_control": distinctness,
             "period_metrics": all_metrics.loc[
                 all_metrics["variant_id"].isin(
                     [
                         selection.selected_variant_id,
                         allocation_timing_challenger_id,
+                        regime_challenger_id,
                         swing_spec.variant_id,
                         "benchmark_spy_buy_hold",
+                        "benchmark_qqq_buy_hold",
+                        "benchmark_rsp_buy_hold",
                         "benchmark_equal_weight_sectors",
                     ]
                 )
@@ -531,8 +699,82 @@ def _run_variant(
     return strategy_run, result
 
 
+def _add_regime_robust_scores(
+    selection_scores: pd.DataFrame,
+    registry: pd.DataFrame,
+    benchmark_result: BacktestResult,
+    config: AppConfig,
+) -> pd.DataFrame:
+    regime_columns = [
+        "variant_id",
+        "normal_annualized_excess",
+        "transition_annualized_excess",
+        "break_annualized_excess",
+        "worst_state_annualized_excess",
+    ]
+    scores = selection_scores.merge(
+        registry[regime_columns],
+        on="variant_id",
+        how="left",
+        validate="one_to_one",
+    )
+    benchmark_metrics = pd.DataFrame(
+        evaluate_periods(
+            "benchmark_spy_buy_hold",
+            benchmark_result.net_returns,
+            benchmark_result.one_way_turnover,
+            config.research,
+            periods=("development", "validation"),
+        )
+    ).set_index("period")
+    development_cagr = float(benchmark_metrics.loc["development", "cagr"])
+    validation_cagr = float(benchmark_metrics.loc["validation", "cagr"])
+    validation_drawdown = float(benchmark_metrics.loc["validation", "max_drawdown"])
+    scores["development_excess_cagr_vs_spy"] = (
+        scores["development_cagr"] - development_cagr
+    )
+    scores["validation_excess_cagr_vs_spy"] = (
+        scores["validation_cagr"] - validation_cagr
+    )
+    scores["validation_drawdown_benefit_vs_spy"] = (
+        scores["validation_max_drawdown"] - validation_drawdown
+    )
+    scores["regime_robust_score"] = (
+        0.25
+        * scores[
+            ["development_excess_cagr_vs_spy", "validation_excess_cagr_vs_spy"]
+        ].min(axis=1)
+        + 0.15 * scores["normal_annualized_excess"]
+        + 0.20 * scores["transition_annualized_excess"]
+        + 0.25 * scores["break_annualized_excess"]
+        + 0.10
+        * scores[["development_sharpe_zero_rf", "validation_sharpe_zero_rf"]].min(
+            axis=1
+        )
+        + 0.05 * scores["validation_drawdown_benefit_vs_spy"]
+        - 0.002 * scores["validation_annualized_turnover"]
+    )
+    scores["regime_gate_passed"] = (
+        (scores["development_excess_cagr_vs_spy"] >= 0.0)
+        & (scores["validation_excess_cagr_vs_spy"] >= -0.03)
+        & (scores["normal_annualized_excess"] >= -0.02)
+        & (scores["transition_annualized_excess"] >= 0.0)
+        & (scores["break_annualized_excess"] >= 0.05)
+        & (scores["validation_drawdown_benefit_vs_spy"] >= 0.02)
+        & (
+            scores["walk_forward_positive_share"]
+            >= config.promotion.minimum_positive_walk_forward_windows
+        )
+        & (
+            scores["validation_annualized_turnover"]
+            <= config.promotion.maximum_annual_turnover
+        )
+    )
+    return scores
+
+
 def _benchmark_backtest(open_prices: pd.Series, *, cost_bps: float) -> BacktestResult:
-    frame = open_prices.rename("SPY").to_frame()
+    frame = open_prices.dropna().rename(open_prices.name or "benchmark").to_frame()
     target = pd.DataFrame(1.0, index=frame.index, columns=frame.columns)
     return run_backtest(frame, target, one_way_cost_bps=cost_bps)
 

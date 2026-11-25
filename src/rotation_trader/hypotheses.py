@@ -461,6 +461,182 @@ def generate_registered_variants() -> tuple[VariantSpec, ...]:
                                 defensive_exposure=0.20,
                             )
                         )
+
+    # Wave 4 explicitly addresses normal-market opportunity cost versus break protection.
+    # It was registered after every historical holdout had been opened and is therefore
+    # prospective-only even when its historical diagnostics are strong.
+    for lookbacks, momentum_weights in base_templates:
+        for cadence in cadences:
+            for weighting in ("inverse_volatility", "score_inverse_volatility"):
+                for confirmation_days in (3, 10):
+                    for defensive_exposure in (0.0, 0.20):
+                        for target_volatility in (0.13, 0.16):
+                            variants.append(
+                                VariantSpec(
+                                    family="continuous_regime_exposure",
+                                    momentum_lookbacks=lookbacks,
+                                    momentum_weights=momentum_weights,
+                                    top_n=3,
+                                    cadence=cadence,
+                                    weighting=weighting,
+                                    acceleration_weight=0.35,
+                                    rank_velocity_weight=0.35,
+                                    persistence_weight=0.30,
+                                    timing_mode="continuous",
+                                    timing_fast_days=42,
+                                    timing_slow_days=200,
+                                    timing_confirmation_days=confirmation_days,
+                                    defensive_exposure=defensive_exposure,
+                                    target_volatility=target_volatility,
+                                    rebalance_on_timing_transition=True,
+                                )
+                            )
+
+                for exit_days in (3, 5):
+                    for reentry_days in (2, 5, 10):
+                        for watch, warning, defensive in timing_profiles[:2]:
+                            variants.append(
+                                VariantSpec(
+                                    family="asymmetric_transition_timing",
+                                    momentum_lookbacks=lookbacks,
+                                    momentum_weights=momentum_weights,
+                                    top_n=3,
+                                    cadence=cadence,
+                                    weighting=weighting,
+                                    acceleration_weight=0.35,
+                                    rank_velocity_weight=0.35,
+                                    persistence_weight=0.30,
+                                    timing_mode="staged",
+                                    timing_fast_days=42,
+                                    timing_slow_days=200,
+                                    timing_confirmation_days=exit_days,
+                                    timing_reentry_days=reentry_days,
+                                    watch_exposure=watch,
+                                    warning_exposure=warning,
+                                    defensive_exposure=defensive,
+                                    rebalance_on_timing_transition=True,
+                                )
+                            )
+
+                for rotation_share in (0.25, 0.50, 0.75):
+                    for defensive_holdings in (1, 2):
+                        for target_volatility in (0.13, 0.16):
+                            variants.append(
+                                VariantSpec(
+                                    family="defensive_rotation_blend",
+                                    momentum_lookbacks=lookbacks,
+                                    momentum_weights=momentum_weights,
+                                    top_n=3,
+                                    cadence=cadence,
+                                    weighting=weighting,
+                                    acceleration_weight=0.35,
+                                    rank_velocity_weight=0.35,
+                                    persistence_weight=0.30,
+                                    timing_mode="continuous",
+                                    timing_fast_days=42,
+                                    timing_slow_days=200,
+                                    timing_confirmation_days=5,
+                                    defensive_exposure=0.0,
+                                    defensive_rotation_share=rotation_share,
+                                    defensive_holdings=defensive_holdings,
+                                    risk_off_mode="defensive",
+                                    target_volatility=target_volatility,
+                                    rebalance_on_timing_transition=True,
+                                )
+                            )
+
+        for weighting in ("inverse_volatility", "score_inverse_volatility"):
+            for timing_mode in ("staged", "continuous"):
+                for rotation_share in (0.25, 0.50):
+                    for target_volatility in (0.13, 0.16):
+                        for dispersion_penalty in (0.0, 0.25):
+                            variants.append(
+                                VariantSpec(
+                                    family="regime_balanced_rotation",
+                                    momentum_lookbacks=lookbacks,
+                                    momentum_weights=momentum_weights,
+                                    top_n=3,
+                                    cadence="monthly",
+                                    weighting=weighting,
+                                    maximum_sector_weight=0.60,
+                                    acceleration_weight=0.35,
+                                    rank_velocity_weight=0.35,
+                                    persistence_weight=0.30,
+                                    timing_mode=timing_mode,
+                                    timing_fast_days=42,
+                                    timing_slow_days=200,
+                                    timing_confirmation_days=5,
+                                    timing_reentry_days=3 if timing_mode == "staged" else None,
+                                    watch_exposure=0.75,
+                                    warning_exposure=0.50,
+                                    defensive_exposure=0.20,
+                                    defensive_rotation_share=rotation_share,
+                                    defensive_holdings=2,
+                                    risk_off_mode="defensive",
+                                    target_volatility=target_volatility,
+                                    dispersion_penalty=dispersion_penalty,
+                                    rebalance_on_timing_transition=True,
+                                )
+                            )
+
+    # Wave 5 retains a diversified sector core while using the rotation engine as a
+    # satellite tilt. This directly tests whether cash substitution, rather than sector
+    # ranking, caused the weak normal-market participation in Waves 3 and 4.
+    for lookbacks, momentum_weights in base_templates:
+        for cadence in cadences:
+            for weighting in ("inverse_volatility", "score_inverse_volatility"):
+                for core_weighting in ("equal", "inverse_volatility"):
+                    for core_weight in (0.25, 0.50, 0.75):
+                        variants.append(
+                            VariantSpec(
+                                family="core_satellite_rotation",
+                                momentum_lookbacks=lookbacks,
+                                momentum_weights=momentum_weights,
+                                top_n=3,
+                                cadence=cadence,
+                                weighting=weighting,
+                                maximum_sector_weight=0.50,
+                                acceleration_weight=0.35,
+                                rank_velocity_weight=0.35,
+                                persistence_weight=0.30,
+                                sector_core_weight=core_weight,
+                                sector_core_defensive_floor=1.0,
+                                sector_core_weighting=core_weighting,
+                            )
+                        )
+                        for core_floor in (0.25, 0.50):
+                            for timing_mode in ("staged", "continuous"):
+                                for target_volatility in (0.16, None):
+                                    variants.append(
+                                        VariantSpec(
+                                            family="timed_core_satellite_rotation",
+                                            momentum_lookbacks=lookbacks,
+                                            momentum_weights=momentum_weights,
+                                            top_n=3,
+                                            cadence=cadence,
+                                            weighting=weighting,
+                                            maximum_sector_weight=0.50,
+                                            acceleration_weight=0.35,
+                                            rank_velocity_weight=0.35,
+                                            persistence_weight=0.30,
+                                            timing_mode=timing_mode,
+                                            timing_fast_days=42,
+                                            timing_slow_days=200,
+                                            timing_confirmation_days=5,
+                                            timing_reentry_days=(
+                                                3 if timing_mode == "staged" else None
+                                            ),
+                                            watch_exposure=0.75,
+                                            warning_exposure=0.50,
+                                            defensive_exposure=0.20,
+                                            sector_core_weight=core_weight,
+                                            sector_core_defensive_floor=core_floor,
+                                            sector_core_weighting=core_weighting,
+                                            risk_off_mode="defensive",
+                                            target_volatility=target_volatility,
+                                            rebalance_on_timing_transition=True,
+                                        )
+                                    )
     unique = {variant.variant_id: variant for variant in variants}
     return tuple(unique[key] for key in sorted(unique))
 
@@ -482,10 +658,24 @@ def registry_frame(variants: tuple[VariantSpec, ...]) -> pd.DataFrame:
         "fast_defensive_reentry",
         "volatility_managed_rotation",
     }
+    wave_four_families = {
+        "continuous_regime_exposure",
+        "asymmetric_transition_timing",
+        "defensive_rotation_blend",
+        "regime_balanced_rotation",
+    }
+    wave_five_families = {
+        "core_satellite_rotation",
+        "timed_core_satellite_rotation",
+    }
     rows = [
         {
             "variant_id": variant.variant_id,
-            "research_wave": 3
+            "research_wave": 5
+            if variant.family in wave_five_families
+            else 4
+            if variant.family in wave_four_families
+            else 3
             if variant.family in wave_three_families
             else 2
             if variant.family in wave_two_families

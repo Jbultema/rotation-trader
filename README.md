@@ -31,12 +31,13 @@ See the frozen research protocol and hypothesis registry under docs.
 
 ## Current research status
 
-As of the completed 2026-11-24 session, 3,272 registered variants across 22 families
-have been tested. Of these, 1,098 Wave 3 variants jointly search sector allocation and
-market timing. The frozen selector and the best native allocation/timing challenger both
-remain research candidates, not actionable strategies. The challenger materially lowers
-historical drawdown, but failed the predeclared walk-forward consistency gate and requires
-prospective shadow evidence.
+As of the completed 2026-11-24 session, 4,400 registered variants across 28 families
+have been tested. Waves 3-5 jointly search sector allocation, timing, continuous exposure,
+asymmetric re-entry, defensive rotation, and core-satellite construction. No standalone
+strategy passed the predeclared substantial-edge and durability gates. The strongest
+risk-control model materially lowers drawdown; the strongest core-satellite model improves
+full-history risk-adjusted results, but neither holds a return edge across validation,
+holdout, and forward periods. Both require prospective shadow evidence.
 
 ## Quick start
 

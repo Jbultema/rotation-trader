@@ -81,11 +81,17 @@ class VariantSpec:
     timing_fast_days: int = 63
     timing_slow_days: int = 200
     timing_confirmation_days: int = 5
+    timing_reentry_days: int | None = None
     watch_exposure: float = 0.75
     warning_exposure: float = 0.50
     defensive_exposure: float = 0.20
     market_drawdown_limit: float | None = None
     rebalance_on_timing_transition: bool = False
+    defensive_rotation_share: float = 0.0
+    defensive_holdings: int = 2
+    sector_core_weight: float = 0.0
+    sector_core_defensive_floor: float = 0.0
+    sector_core_weighting: str = "equal"
 
     @property
     def variant_id(self) -> str:
@@ -115,7 +121,9 @@ class VariantSpec:
             or self.breadth_threshold is not None
             or self.dynamic_top_n
             or self.weighting in {"score_softmax", "score_inverse_volatility"}
-            or self.timing_mode == "staged"
+            or self.timing_mode in {"staged", "continuous"}
+            or self.defensive_rotation_share > 0.0
+            or self.sector_core_weight > 0.0
         )
 
 
@@ -317,7 +325,7 @@ def build_strategy(
         base_raw,
         spec,
     )
-    if spec.timing_mode == "staged":
+    if spec.timing_mode in {"staged", "continuous"}:
         exposure *= timing_exposure
         risk_on &= timing_exposure > 0.0
     else:
@@ -348,7 +356,32 @@ def build_strategy(
         temperature=spec.score_temperature,
         maximum_weight=spec.maximum_sector_weight,
     )
-    desired = desired.mul(exposure, axis=0)
+    if spec.sector_core_weight > 0.0:
+        satellite_budget = exposure * (1.0 - spec.sector_core_weight)
+        desired = desired.mul(satellite_budget, axis=0)
+        core = _sector_core_weights(
+            close.notna(),
+            cache.volatility(63),
+            weighting=spec.sector_core_weighting,
+        )
+        core_budget = spec.sector_core_weight * (
+            spec.sector_core_defensive_floor
+            + (1.0 - spec.sector_core_defensive_floor) * exposure
+        )
+        desired = desired.add(core.mul(core_budget, axis=0), fill_value=0.0)
+        desired = _cap_partial_weights(desired, spec.maximum_sector_weight)
+    else:
+        desired = desired.mul(exposure, axis=0)
+    if spec.defensive_rotation_share > 0.0:
+        desired = _add_defensive_rotation(
+            desired,
+            score,
+            cache.volatility(63),
+            removed_exposure=(1.0 - exposure).clip(lower=0.0, upper=1.0),
+            rotation_share=spec.defensive_rotation_share,
+            holdings=spec.defensive_holdings,
+            maximum_weight=spec.maximum_sector_weight,
+        )
     if spec.target_volatility is not None:
         desired = _apply_volatility_target(
             desired,
@@ -372,6 +405,17 @@ def build_strategy(
             "timing_score": timing_score,
             "timing_stage": timing_stage,
             "timing_exposure": timing_exposure,
+            "defensive_rotation_budget": (
+                (1.0 - exposure).clip(lower=0.0, upper=1.0)
+                * spec.defensive_rotation_share
+            ),
+            "sector_core_budget": (
+                spec.sector_core_weight
+                * (
+                    spec.sector_core_defensive_floor
+                    + (1.0 - spec.sector_core_defensive_floor) * exposure
+                )
+            ),
             "target_holding_count": target_count,
             "group_rotation_signal": _group_scalar(close, spec.group_rotation_days),
             "average_sector_correlation": average_correlation,
@@ -416,7 +460,7 @@ def _timing_exposure(
     spec: VariantSpec,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     index = cache.close.index
-    if spec.timing_mode != "staged":
+    if spec.timing_mode not in {"staged", "continuous"}:
         return (
             pd.Series(1.0, index=index),
             pd.Series(3, index=index, dtype=int),
@@ -444,14 +488,34 @@ def _timing_exposure(
         index=index,
         dtype=int,
     )
-    exposure = stage.map(
-        {
-            3: 1.0,
-            2: spec.watch_exposure,
-            1: spec.warning_exposure,
-            0: spec.defensive_exposure,
-        }
-    ).astype(float)
+    if spec.timing_reentry_days is not None:
+        raw_stage = pd.Series(
+            np.select(
+                [evidence >= 0.75, evidence >= 0.50, evidence >= 0.25],
+                [3, 2, 1],
+                default=0,
+            ),
+            index=index,
+            dtype=int,
+        )
+        stage = _confirm_stage_transitions(
+            raw_stage,
+            exit_days=max(1, spec.timing_confirmation_days),
+            reentry_days=max(1, spec.timing_reentry_days),
+        )
+    if spec.timing_mode == "continuous":
+        exposure = spec.defensive_exposure + (
+            (1.0 - spec.defensive_exposure) * confirmed.clip(lower=0.0, upper=1.0)
+        )
+    else:
+        exposure = stage.map(
+            {
+                3: 1.0,
+                2: spec.watch_exposure,
+                1: spec.warning_exposure,
+                0: spec.defensive_exposure,
+            }
+        ).astype(float)
     if spec.market_drawdown_limit is not None:
         drawdown = cache.benchmark.div(cache.benchmark.cummax()).sub(1.0)
         exposure = exposure.where(
@@ -460,6 +524,38 @@ def _timing_exposure(
         )
         stage = stage.where(drawdown > spec.market_drawdown_limit, 0)
     return confirmed, stage, exposure
+
+
+def _confirm_stage_transitions(
+    proposed: pd.Series,
+    *,
+    exit_days: int,
+    reentry_days: int,
+) -> pd.Series:
+    values = proposed.to_numpy(dtype=int)
+    confirmed = np.zeros(len(values), dtype=int)
+    if not len(values):
+        return pd.Series(confirmed, index=proposed.index, dtype=int)
+    current = int(values[0])
+    candidate = current
+    count = 0
+    for position, value in enumerate(values):
+        value = int(value)
+        if value == current:
+            candidate = current
+            count = 0
+        else:
+            if value != candidate:
+                candidate = value
+                count = 1
+            else:
+                count += 1
+            required = reentry_days if candidate > current else exit_days
+            if count >= required:
+                current = candidate
+                count = 0
+        confirmed[position] = current
+    return pd.Series(confirmed, index=proposed.index, dtype=int)
 
 
 def _dynamic_holding_count(
@@ -561,6 +657,59 @@ def _size_selected(
     return _cap_weights(raw, maximum_weight)
 
 
+def _add_defensive_rotation(
+    offense: pd.DataFrame,
+    score: pd.DataFrame,
+    volatility: pd.DataFrame,
+    *,
+    removed_exposure: pd.Series,
+    rotation_share: float,
+    holdings: int,
+    maximum_weight: float,
+) -> pd.DataFrame:
+    defensive = [ticker for ticker in offense.columns if ticker in DEFENSIVE_SECTORS]
+    if not defensive or rotation_share <= 0.0:
+        return offense
+    defensive_score = score[defensive]
+    ranks = defensive_score.rank(axis=1, ascending=False, method="first")
+    selected = ranks.le(max(1, holdings)) & defensive_score.notna()
+    inverse_volatility = (1.0 / volatility[defensive].where(selected)).replace(
+        [np.inf, -np.inf],
+        np.nan,
+    )
+    fallback = inverse_volatility.div(inverse_volatility.sum(axis=1), axis=0).fillna(0.0)
+    budget = removed_exposure * rotation_share
+    combined = offense.copy()
+    combined.loc[:, defensive] = combined[defensive].add(
+        fallback.mul(budget, axis=0),
+        fill_value=0.0,
+    )
+    total = combined.sum(axis=1)
+    normalized = combined.div(total.replace(0.0, np.nan), axis=0).fillna(0.0)
+    return _cap_weights(normalized, maximum_weight).mul(total, axis=0)
+
+
+def _sector_core_weights(
+    available: pd.DataFrame,
+    volatility: pd.DataFrame,
+    *,
+    weighting: str,
+) -> pd.DataFrame:
+    if weighting == "equal":
+        count = available.sum(axis=1).replace(0, np.nan)
+        return available.astype(float).div(count, axis=0).fillna(0.0)
+    if weighting == "inverse_volatility":
+        inverse = (1.0 / volatility.where(available)).replace([np.inf, -np.inf], np.nan)
+        return inverse.div(inverse.sum(axis=1), axis=0).fillna(0.0)
+    raise ValueError(f"Unsupported sector core weighting: {weighting}")
+
+
+def _cap_partial_weights(weights: pd.DataFrame, maximum_weight: float) -> pd.DataFrame:
+    total = weights.sum(axis=1)
+    normalized = weights.div(total.replace(0.0, np.nan), axis=0).fillna(0.0)
+    return _cap_weights(normalized, maximum_weight).mul(total, axis=0)
+
+
 def _cap_weights(weights: pd.DataFrame, maximum_weight: float) -> pd.DataFrame:
     if maximum_weight >= 1.0:
         return weights
@@ -602,26 +751,10 @@ def _latch_weights(
     risk_values = risk_on.to_numpy(dtype=bool)
     target_values = np.zeros(desired_values.shape, dtype=float)
     active = np.zeros(desired_values.shape[1], dtype=float)
-    defensive_positions = np.asarray(
-        [
-            position
-            for position, ticker in enumerate(desired.columns)
-            if ticker in DEFENSIVE_SECTORS
-        ],
-        dtype=int,
-    )
     for position in range(len(desired.index)):
         if rebalance_values[position]:
-            if risk_values[position]:
+            if risk_values[position] or spec.risk_off_mode == "defensive":
                 active = desired_values[position].copy()
-            elif spec.risk_off_mode == "defensive":
-                allowed = defensive_positions[
-                    selected_values[position, defensive_positions]
-                    | (desired_values[position, defensive_positions] > 0.0)
-                ]
-                active[:] = 0.0
-                if len(allowed):
-                    active[allowed] = 1.0 / len(allowed)
             else:
                 active[:] = 0.0
         if spec.daily_emergency_exit:

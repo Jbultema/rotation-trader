@@ -82,3 +82,28 @@ variants test allocation and timing jointly:
 The search spans holding-count bounds, weighting temperature, sector caps, fast/slow
 trend windows, confirmation windows, stage exposure budgets, target volatility, and
 dispersion penalties. Every combination remains in the frozen registry and trial count.
+
+## Wave 4 registration
+
+Registered after every historical holdout had been opened. The 480 variants test:
+
+1. `continuous_regime_exposure`: continuous evidence-scaled exposure instead of discrete
+   threshold jumps.
+2. `asymmetric_transition_timing`: separate deterioration and repair confirmation delays.
+3. `defensive_rotation_blend`: rotate part of removed exposure into ranked defensive
+   sectors rather than cash.
+4. `regime_balanced_rotation`: combine continuous or staged timing, volatility control,
+   dispersion control, and defensive substitution.
+
+## Wave 5 registration
+
+Registered after Wave 4 failed its substantial-edge gate. The 648 variants test:
+
+1. `core_satellite_rotation`: an always-invested diversified sector core plus a ranked
+   rotation tilt.
+2. `timed_core_satellite_rotation`: independent core size, core weighting, defensive
+   core floor, satellite weighting, timing mode, and volatility control.
+
+Wave 5 tests whether maintaining broad sector exposure repairs normal-market opportunity
+cost without discarding break protection. It is prospective-only and cannot be promoted
+from the already-examined historical periods.

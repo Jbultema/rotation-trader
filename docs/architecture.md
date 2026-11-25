@@ -50,6 +50,13 @@ earns the lagged `^IRX` yield. Because Wave 3 also postdates the original holdou
 best candidate is tracked as a separate prospective challenger and cannot be promoted
 from historical evidence alone.
 
+Wave 4 separates active break protection from transition participation through continuous
+exposure, asymmetric confirmation, and defensive-sector fallback. Wave 5 adds a
+diversified equal- or inverse-volatility sector core beneath the concentrated rotation
+sleeve. The reporting layer compares every candidate with SPY, QQQ, RSP, equal-weight
+sectors, and each sector ETF over full history, fixed periods, rolling one- and three-year
+windows, point-in-time states, and detected break episodes.
+
 ## Known limits
 
 - The stable universe is today's nine original sector ETFs, not a reconstructed

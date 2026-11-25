@@ -43,6 +43,18 @@ def test_records_selector_and_allocation_timing_challenger_idempotently(
                 "effective_at": "next_open",
             },
         },
+        "regime_robust_challenger": {
+            "variant_id": "regime-one",
+            "latest_decision": {
+                "as_of_close": "2026-11-24",
+                "leadership_state": "transition",
+                "target_weights": {"XLP": 0.3},
+                "cash_weight": 0.7,
+                "timing_stage": 1,
+                "sleeve_exposure": 0.3,
+                "effective_at": "next_open",
+            },
+        },
     }
     (report_dir / "research_summary.json").write_text(
         json.dumps(summary),
@@ -65,11 +77,12 @@ def test_records_selector_and_allocation_timing_challenger_idempotently(
     first = record_shadow_decisions(report_dir, journal)
     second = record_shadow_decisions(report_dir, journal)
 
-    assert len(first) == 2
+    assert len(first) == 3
     assert first == second
-    assert len(_read_records(journal)) == 2
+    assert len(_read_records(journal)) == 3
     assert [record["candidate_role"] for record in first] == [
         "selected_candidate",
         "allocation_timing_challenger",
+        "regime_robust_challenger",
     ]
     assert first[1]["timing_stage"] == 1

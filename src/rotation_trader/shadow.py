@@ -28,6 +28,17 @@ def record_shadow_decisions(report_dir: Path, journal_path: Path) -> list[dict[s
                 challenger["latest_decision"],
             )
         )
+    regime_challenger = summary.get("regime_robust_challenger")
+    if isinstance(regime_challenger, dict) and isinstance(
+        regime_challenger.get("latest_decision"), dict
+    ):
+        candidates.append(
+            (
+                "regime_robust_challenger",
+                str(regime_challenger["variant_id"]),
+                regime_challenger["latest_decision"],
+            )
+        )
     if not candidates:
         raise ValueError("Research run has no selected decision to shadow.")
     existing = _read_records(journal_path)

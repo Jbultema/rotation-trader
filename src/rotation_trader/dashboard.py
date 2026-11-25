@@ -117,6 +117,45 @@ if isinstance(challenger, dict):
     challenger_chart.update_xaxes(tickformat=".0%", range=[0, 1])
     st.plotly_chart(challenger_chart, width="stretch")
 
+regime_challenger = summary.get("regime_robust_challenger")
+if isinstance(regime_challenger, dict):
+    regime_decision = regime_challenger["latest_decision"]
+    st.subheader("Normal and Break Regime Challenger")
+    regime_metrics = st.columns(4)
+    regime_metrics[0].metric(
+        "Family",
+        str(regime_challenger["family"]).replace("_", " ").title(),
+    )
+    regime_metrics[1].metric(
+        "Substantial-edge gate",
+        "Passed" if regime_challenger["preholdout_gate_passed"] else "Failed",
+    )
+    regime_metrics[2].metric(
+        "Sleeve exposure",
+        _percent(float(regime_decision["sleeve_exposure"])),
+    )
+    regime_metrics[3].metric(
+        "Cash",
+        _percent(float(regime_decision["cash_weight"])),
+    )
+    regime_targets = pd.Series(regime_decision["target_weights"], dtype=float).sort_values()
+    regime_allocation = px.bar(
+        regime_targets.rename_axis("sector").reset_index(name="weight"),
+        x="weight",
+        y="sector",
+        orientation="h",
+        color="sector",
+        color_discrete_sequence=px.colors.qualitative.Safe,
+        labels={"weight": "Target weight", "sector": "Sector"},
+    )
+    regime_allocation.update_layout(
+        showlegend=False,
+        height=300,
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+    )
+    regime_allocation.update_xaxes(tickformat=".0%", range=[0, 1])
+    st.plotly_chart(regime_allocation, width="stretch")
+
 st.subheader("Candidate vs Controls")
 comparison = pd.read_parquet(REPORT_DIR / "comparison_returns.parquet").fillna(0.0)
 window = st.segmented_control(
@@ -133,8 +172,11 @@ equity = go.Figure()
 palette = {
     "rotation_candidate": "#0072B2",
     "allocation_timing_challenger": "#CC79A7",
+    "regime_robust_challenger": "#D55E00",
     "swing_sector_control": "#E69F00",
     "spy_buy_hold": "#009E73",
+    "qqq_buy_hold": "#56B4E9",
+    "rsp_buy_hold": "#F0E442",
     "equal_weight_sectors": "#6B7280",
 }
 for column in growth:
@@ -153,6 +195,31 @@ equity.update_layout(
     legend={"orientation": "h", "y": -0.2},
 )
 st.plotly_chart(equity, width="stretch")
+
+st.subheader("Simple Buy-and-Hold Benchmarks")
+buy_hold = pd.read_csv(REPORT_DIR / "simple_buy_hold_metrics.csv")
+buy_hold_period = st.segmented_control(
+    "Benchmark period",
+    options=["full_history", "development", "validation", "holdout", "forward_diagnostic"],
+    default="full_history",
+    format_func=lambda value: str(value).replace("_", " ").title(),
+)
+buy_hold_shown = buy_hold.loc[buy_hold["period"].eq(buy_hold_period)].copy()
+buy_hold_shown["benchmark"] = buy_hold_shown["variant_id"].str.removeprefix("benchmark_")
+st.dataframe(
+    buy_hold_shown[
+        ["benchmark", "cagr", "sharpe_zero_rf", "max_drawdown", "annualized_volatility"]
+    ].sort_values("cagr", ascending=False),
+    hide_index=True,
+    width="stretch",
+    column_config={
+        "benchmark": "Buy and hold",
+        "cagr": st.column_config.NumberColumn("CAGR", format="percent"),
+        "sharpe_zero_rf": st.column_config.NumberColumn("Sharpe", format="%.2f"),
+        "max_drawdown": st.column_config.NumberColumn("Max drawdown", format="percent"),
+        "annualized_volatility": st.column_config.NumberColumn("Volatility", format="percent"),
+    },
+)
 
 distinct = summary["behavioral_distinctness"]
 comparison_cols = st.columns(3)
@@ -182,6 +249,88 @@ regime_chart = px.bar(
 regime_chart.update_yaxes(tickformat=".0%")
 regime_chart.update_layout(height=430, margin={"l": 10, "r": 10, "t": 20, "b": 10})
 st.plotly_chart(regime_chart, width="stretch")
+
+st.subheader("Point-in-Time Normal vs Regime Change")
+states = pd.read_csv(REPORT_DIR / "state_conditioned_comparison.csv")
+state_chart = px.bar(
+    states,
+    x="market_state",
+    y="annualized_arithmetic_return",
+    color="strategy",
+    barmode="group",
+    category_orders={"market_state": ["normal", "transition", "break"]},
+    color_discrete_map=palette,
+    labels={
+        "market_state": "Point-in-time market state",
+        "annualized_arithmetic_return": "Conditional annualized return",
+        "strategy": "Strategy",
+    },
+)
+state_chart.update_yaxes(tickformat=".0%")
+state_chart.update_layout(height=430, margin={"l": 10, "r": 10, "t": 20, "b": 10})
+st.plotly_chart(state_chart, width="stretch")
+
+st.subheader("Rolling Outperformance Durability")
+rolling = pd.read_csv(REPORT_DIR / "rolling_outperformance.csv")
+st.dataframe(
+    rolling[
+        [
+            "strategy",
+            "benchmark",
+            "window_sessions",
+            "beat_share",
+            "median_annualized_excess",
+            "p10_annualized_excess",
+            "latest_annualized_excess",
+        ]
+    ],
+    hide_index=True,
+    width="stretch",
+    column_config={
+        "strategy": "Strategy",
+        "benchmark": "Buy and hold",
+        "window_sessions": "Sessions",
+        "beat_share": st.column_config.NumberColumn("Beat rate", format="percent"),
+        "median_annualized_excess": st.column_config.NumberColumn(
+            "Median excess", format="percent"
+        ),
+        "p10_annualized_excess": st.column_config.NumberColumn(
+            "10th percentile", format="percent"
+        ),
+        "latest_annualized_excess": st.column_config.NumberColumn(
+            "Latest excess", format="percent"
+        ),
+    },
+)
+
+st.subheader("Detected Break Episodes")
+events = pd.read_csv(REPORT_DIR / "regime_break_events.csv")
+breaks = events.loc[events["phase"].eq("break")].copy()
+break_summary = (
+    breaks.groupby("strategy")
+    .agg(
+        episodes=("event", "nunique"),
+        median_break_return=("return", "median"),
+        median_excess_vs_spy=("excess_vs_spy", "median"),
+        worst_episode_drawdown=("max_drawdown", "min"),
+    )
+    .reset_index()
+)
+break_chart = px.bar(
+    break_summary,
+    x="strategy",
+    y="median_excess_vs_spy",
+    color="strategy",
+    color_discrete_map=palette,
+    labels={"strategy": "Strategy", "median_excess_vs_spy": "Median break excess vs SPY"},
+)
+break_chart.update_yaxes(tickformat=".0%")
+break_chart.update_layout(
+    showlegend=False,
+    height=360,
+    margin={"l": 10, "r": 10, "t": 20, "b": 10},
+)
+st.plotly_chart(break_chart, width="stretch")
 
 st.subheader("Research Robustness")
 family = pd.read_csv(REPORT_DIR / "family_preholdout_evidence.csv")

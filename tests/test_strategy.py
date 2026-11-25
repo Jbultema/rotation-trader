@@ -1,7 +1,13 @@
 import numpy as np
 import pandas as pd
 
-from rotation_trader.strategy import FeatureCache, VariantSpec, build_strategy, rebalance_mask
+from rotation_trader.strategy import (
+    FeatureCache,
+    VariantSpec,
+    _confirm_stage_transitions,
+    build_strategy,
+    rebalance_mask,
+)
 
 
 def _prices() -> tuple[pd.DataFrame, pd.Series]:
@@ -155,3 +161,72 @@ def test_staged_timing_creates_partial_exposure_and_transition_rebalances() -> N
     assert result.target_weights.sum(axis=1).between(0.0, 1.0 + 1e-12).all()
     scheduled = rebalance_mask(close.index, spec.cadence)
     assert (result.rebalance & ~scheduled).any()
+
+
+def test_asymmetric_stage_confirmation_uses_separate_exit_and_reentry_delays() -> None:
+    proposed = pd.Series([3, 0, 0, 3, 3])
+
+    result = _confirm_stage_transitions(proposed, exit_days=2, reentry_days=2)
+
+    assert result.tolist() == [3, 3, 0, 0, 3]
+
+
+def test_continuous_timing_can_rotate_removed_exposure_to_defensive_sectors() -> None:
+    close, benchmark = _prices()
+    benchmark.iloc[-160:] = np.geomspace(benchmark.iloc[-160], 65.0, 160)
+    spec = VariantSpec(
+        family="defensive_rotation_blend",
+        momentum_lookbacks=(63, 126),
+        momentum_weights=(0.4, 0.6),
+        top_n=2,
+        weighting="inverse_volatility",
+        absolute_gate=False,
+        timing_mode="continuous",
+        timing_fast_days=42,
+        timing_slow_days=100,
+        timing_confirmation_days=3,
+        defensive_exposure=0.0,
+        defensive_rotation_share=0.5,
+        defensive_holdings=2,
+        risk_off_mode="defensive",
+        rebalance_on_timing_transition=True,
+    )
+
+    result = build_strategy(FeatureCache(close, benchmark), spec)
+    latest = result.target_weights.iloc[-1]
+
+    assert result.diagnostics["timing_exposure"].nunique() > 4
+    assert result.diagnostics["defensive_rotation_budget"].max() > 0.0
+    assert latest[["XLP", "XLV"]].sum() > 0.0
+    assert result.target_weights.sum(axis=1).max() <= 1.0 + 1e-12
+
+
+def test_core_satellite_retains_diversified_core_during_defensive_state() -> None:
+    close, benchmark = _prices()
+    benchmark.iloc[-160:] = np.geomspace(benchmark.iloc[-160], 60.0, 160)
+    spec = VariantSpec(
+        family="timed_core_satellite_rotation",
+        momentum_lookbacks=(63, 126),
+        momentum_weights=(0.4, 0.6),
+        top_n=1,
+        weighting="inverse_volatility",
+        absolute_gate=False,
+        timing_mode="continuous",
+        timing_fast_days=42,
+        timing_slow_days=100,
+        timing_confirmation_days=3,
+        defensive_exposure=0.0,
+        sector_core_weight=0.75,
+        sector_core_defensive_floor=0.5,
+        sector_core_weighting="equal",
+        risk_off_mode="defensive",
+        rebalance_on_timing_transition=True,
+    )
+
+    result = build_strategy(FeatureCache(close, benchmark), spec)
+    latest = result.target_weights.iloc[-1]
+
+    assert result.diagnostics.iloc[-1]["sector_core_budget"] >= 0.375
+    assert latest.gt(0.0).sum() == 3
+    assert latest.sum() >= 0.375 - 1e-12
+    assert result.target_weights.sum(axis=1).max() <= 1.0 + 1e-12

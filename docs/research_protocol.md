@@ -105,3 +105,24 @@ into the backtest.
 Wave 3 is diagnostic and prospective-only. It cannot regain a pristine historical
 holdout. A separate challenger is reported so a simple frozen selector cannot hide the
 best native allocation/timing model, but the same promotion gates remain binding.
+
+## Waves 4 and 5 regime robustness
+
+Wave 4 adds continuous rather than threshold-only exposure, asymmetric exit/re-entry
+confirmation, defensive-sector substitution, and combined regime-balanced variants.
+Wave 5 adds always-invested and timed core-satellite portfolios: a diversified sector
+core plus a concentrated rotation sleeve. These mechanisms directly test whether missed
+normal-market compounding is caused by cash substitution rather than weak ranking.
+
+The regime challenger is selected using pre-2019 evidence only. Its gate requires
+competitive development and validation returns, no more than two percentage points of
+annualized normal-market lag, positive transition and active-break excess return, at
+least two percentage points of validation drawdown improvement, acceptable turnover,
+and positive relative performance in at least 60% of walk-forward windows.
+
+Point-in-time market states use only current and trailing SPY information. `normal`
+requires intact trend and non-extreme volatility. `break` requires active rapid loss or
+a drawdown of at least 10% combined with weak fast trend and high volatility. Remaining
+sessions are `transition`, including repair periods. State labels are evaluation strata,
+not additional trading inputs. Waves 4 and 5 are permanently prospective-only because
+the historical holdout had already been opened.
