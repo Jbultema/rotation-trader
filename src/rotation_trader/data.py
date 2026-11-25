@@ -59,6 +59,7 @@ def download_price_snapshot(
         dict.fromkeys(
             [
                 config.benchmark,
+                config.cash_yield_ticker,
                 *config.stable_sectors,
                 *config.extension_sectors,
                 *config.context_tickers,

@@ -62,3 +62,23 @@ adversarial extensions, not fresh-holdout hypotheses:
 
 Wave 2 is permanently marked in the machine-readable registry and requires prospective
 shadow validation even if all historical gates pass.
+
+## Wave 3 registration
+
+Registered on 2026-11-24 after the sealed holdout had already been opened. These 1,098
+variants test allocation and timing jointly:
+
+1. `adaptive_confidence_allocation`: dynamic holding counts plus capped score-softmax or
+   inverse-volatility confidence sizing.
+2. `staged_market_timing`: risk-on, watch, warning, and defensive exposure budgets from
+   fast/slow market trend, sector breadth, and positive sector momentum.
+3. `adaptive_timed_rotation`: dynamic sector selection combined with staged timing and
+   timing-transition rebalances.
+4. `fast_defensive_reentry`: asymmetric confirmation that seeks to re-enter faster after
+   market repair without weakening the initial defensive gate.
+5. `volatility_managed_rotation`: staged timing plus target-volatility and cross-sector
+   dispersion controls.
+
+The search spans holding-count bounds, weighting temperature, sector caps, fast/slow
+trend windows, confirmation windows, stage exposure budgets, target volatility, and
+dispersion penalties. Every combination remains in the frozen registry and trial count.

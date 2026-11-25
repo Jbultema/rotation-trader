@@ -72,6 +72,20 @@ class VariantSpec:
     correlation_rotation_scale: float = 0.0
     context_echo_days: int = 126
     context_echo_weight: float = 0.0
+    dynamic_top_n: bool = False
+    minimum_holdings: int = 2
+    maximum_holdings: int = 5
+    score_temperature: float = 1.0
+    maximum_sector_weight: float = 1.0
+    timing_mode: str = "binary"
+    timing_fast_days: int = 63
+    timing_slow_days: int = 200
+    timing_confirmation_days: int = 5
+    watch_exposure: float = 0.75
+    warning_exposure: float = 0.50
+    defensive_exposure: float = 0.20
+    market_drawdown_limit: float | None = None
+    rebalance_on_timing_transition: bool = False
 
     @property
     def variant_id(self) -> str:
@@ -99,6 +113,9 @@ class VariantSpec:
                 )
             )
             or self.breadth_threshold is not None
+            or self.dynamic_top_n
+            or self.weighting in {"score_softmax", "score_inverse_volatility"}
+            or self.timing_mode == "staged"
         )
 
 
@@ -295,19 +312,42 @@ def build_strategy(
     )
     exposure = exposure.fillna(1.0)
 
+    timing_score, timing_stage, timing_exposure = _timing_exposure(
+        cache,
+        base_raw,
+        spec,
+    )
+    if spec.timing_mode == "staged":
+        exposure *= timing_exposure
+        risk_on &= timing_exposure > 0.0
+    else:
+        timing_score = risk_on.astype(float)
+        timing_stage = risk_on.astype(int).mul(3)
+        timing_exposure = risk_on.astype(float)
+
     ranks = score.where(eligible).rank(axis=1, ascending=False, method="first")
     rebalance = rebalance_mask(close.index, spec.cadence)
+    if spec.rebalance_on_timing_transition:
+        rebalance |= timing_stage.ne(timing_stage.shift(1)).fillna(False)
+    target_count = _dynamic_holding_count(score, eligible, spec)
     selected = _stateful_selection(
         ranks,
         eligible,
         rebalance,
         risk_on,
-        top_n=spec.top_n,
+        top_n=target_count,
         rank_buffer=spec.rank_buffer,
         minimum_holding_rebalances=spec.minimum_holding_rebalances,
         daily_emergency_exit=spec.daily_emergency_exit,
     )
-    desired = _size_selected(selected, cache.volatility(63), spec.weighting)
+    desired = _size_selected(
+        selected,
+        cache.volatility(63),
+        score,
+        spec.weighting,
+        temperature=spec.score_temperature,
+        maximum_weight=spec.maximum_sector_weight,
+    )
     desired = desired.mul(exposure, axis=0)
     if spec.target_volatility is not None:
         desired = _apply_volatility_target(
@@ -329,6 +369,10 @@ def build_strategy(
             "dispersion_z": dispersion_z,
             "risk_on": risk_on,
             "exposure_scalar": exposure,
+            "timing_score": timing_score,
+            "timing_stage": timing_stage,
+            "timing_exposure": timing_exposure,
+            "target_holding_count": target_count,
             "group_rotation_signal": _group_scalar(close, spec.group_rotation_days),
             "average_sector_correlation": average_correlation,
             "rotation_signal_multiplier": correlation_multiplier,
@@ -366,13 +410,78 @@ def rebalance_mask(index: pd.DatetimeIndex, cadence: str) -> pd.Series:
     return sessions
 
 
+def _timing_exposure(
+    cache: FeatureCache,
+    base_raw: pd.DataFrame,
+    spec: VariantSpec,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    index = cache.close.index
+    if spec.timing_mode != "staged":
+        return (
+            pd.Series(1.0, index=index),
+            pd.Series(3, index=index, dtype=int),
+            pd.Series(1.0, index=index),
+        )
+    evidence = pd.concat(
+        [
+            cache.benchmark_trend(spec.timing_fast_days).astype(float),
+            cache.benchmark_trend(spec.timing_slow_days).astype(float),
+            cache.breadth(spec.timing_slow_days),
+            base_raw.gt(0.0).mean(axis=1),
+        ],
+        axis=1,
+    ).mean(axis=1)
+    confirmed = evidence.rolling(
+        max(1, spec.timing_confirmation_days),
+        min_periods=1,
+    ).mean()
+    stage = pd.Series(
+        np.select(
+            [confirmed >= 0.75, confirmed >= 0.50, confirmed >= 0.25],
+            [3, 2, 1],
+            default=0,
+        ),
+        index=index,
+        dtype=int,
+    )
+    exposure = stage.map(
+        {
+            3: 1.0,
+            2: spec.watch_exposure,
+            1: spec.warning_exposure,
+            0: spec.defensive_exposure,
+        }
+    ).astype(float)
+    if spec.market_drawdown_limit is not None:
+        drawdown = cache.benchmark.div(cache.benchmark.cummax()).sub(1.0)
+        exposure = exposure.where(
+            drawdown > spec.market_drawdown_limit,
+            np.minimum(exposure, spec.defensive_exposure),
+        )
+        stage = stage.where(drawdown > spec.market_drawdown_limit, 0)
+    return confirmed, stage, exposure
+
+
+def _dynamic_holding_count(
+    score: pd.DataFrame,
+    eligible: pd.DataFrame,
+    spec: VariantSpec,
+) -> pd.Series:
+    if not spec.dynamic_top_n:
+        return pd.Series(spec.top_n, index=score.index, dtype=int)
+    positive = (score.gt(0.0) & eligible).sum(axis=1)
+    available = eligible.sum(axis=1)
+    desired = positive.clip(lower=spec.minimum_holdings, upper=spec.maximum_holdings)
+    return desired.where(available >= desired, available).astype(int)
+
+
 def _stateful_selection(
     ranks: pd.DataFrame,
     eligible: pd.DataFrame,
     rebalance: pd.Series,
     risk_on: pd.Series,
     *,
-    top_n: int,
+    top_n: int | pd.Series,
     rank_buffer: int,
     minimum_holding_rebalances: int,
     daily_emergency_exit: bool,
@@ -381,6 +490,11 @@ def _stateful_selection(
     eligible_values = eligible.to_numpy(dtype=bool)
     rebalance_values = rebalance.to_numpy(dtype=bool)
     risk_values = risk_on.to_numpy(dtype=bool)
+    target_counts = (
+        np.full(len(ranks.index), top_n, dtype=int)
+        if isinstance(top_n, int)
+        else top_n.reindex(ranks.index).fillna(0).to_numpy(dtype=int)
+    )
     selected_values = np.zeros(rank_values.shape, dtype=bool)
     active = np.zeros(rank_values.shape[1], dtype=bool)
     age = np.zeros(rank_values.shape[1], dtype=int)
@@ -393,12 +507,19 @@ def _stateful_selection(
                 age[:] = 0
             else:
                 row_ranks = rank_values[position]
+                target_count = max(0, int(target_counts[position]))
                 must_hold = age < minimum_holding_rebalances
-                inside_buffer = np.isfinite(row_ranks) & (row_ranks <= top_n + rank_buffer)
+                inside_buffer = np.isfinite(row_ranks) & (
+                    row_ranks <= target_count + rank_buffer
+                )
                 active &= eligible_values[position] & (must_hold | inside_buffer)
                 ordered = np.argsort(np.where(np.isfinite(row_ranks), row_ranks, np.inf))
+                if int(active.sum()) > target_count:
+                    keep = [ticker for ticker in ordered if active[ticker]][:target_count]
+                    active[:] = False
+                    active[keep] = True
                 for ticker_position in ordered:
-                    if int(active.sum()) >= top_n:
+                    if int(active.sum()) >= target_count:
                         break
                     if (
                         not active[ticker_position]
@@ -416,15 +537,56 @@ def _stateful_selection(
 def _size_selected(
     selected: pd.DataFrame,
     volatility: pd.DataFrame,
+    score: pd.DataFrame,
     weighting: str,
+    *,
+    temperature: float,
+    maximum_weight: float,
 ) -> pd.DataFrame:
     if weighting == "equal":
         count = selected.sum(axis=1).replace(0, np.nan)
-        return selected.astype(float).div(count, axis=0).fillna(0.0)
-    if weighting == "inverse_volatility":
+        raw = selected.astype(float).div(count, axis=0).fillna(0.0)
+    elif weighting == "inverse_volatility":
         inverse = (1.0 / volatility.where(selected)).replace([np.inf, -np.inf], np.nan)
-        return inverse.div(inverse.sum(axis=1), axis=0).fillna(0.0)
-    raise ValueError(f"Unsupported weighting: {weighting}")
+        raw = inverse.div(inverse.sum(axis=1), axis=0).fillna(0.0)
+    elif weighting in {"score_softmax", "score_inverse_volatility"}:
+        scaled = score.div(max(temperature, 1e-6)).where(selected)
+        shifted = scaled.sub(scaled.max(axis=1), axis=0)
+        raw = np.exp(shifted).where(selected)
+        if weighting == "score_inverse_volatility":
+            raw = raw.div(volatility.where(selected)).replace([np.inf, -np.inf], np.nan)
+        raw = raw.div(raw.sum(axis=1), axis=0).fillna(0.0)
+    else:
+        raise ValueError(f"Unsupported weighting: {weighting}")
+    return _cap_weights(raw, maximum_weight)
+
+
+def _cap_weights(weights: pd.DataFrame, maximum_weight: float) -> pd.DataFrame:
+    if maximum_weight >= 1.0:
+        return weights
+    values = weights.to_numpy(dtype=float)
+    capped = np.zeros_like(values)
+    for row_position, row in enumerate(values):
+        active = row > 0.0
+        if not active.any():
+            continue
+        remaining = 1.0
+        uncapped = active.copy()
+        allocation = np.zeros_like(row)
+        while uncapped.any() and remaining > 1e-12:
+            raw = row[uncapped]
+            proposal = remaining * raw / raw.sum()
+            over = proposal > maximum_weight
+            positions = np.flatnonzero(uncapped)
+            if not over.any():
+                allocation[positions] = proposal
+                break
+            capped_positions = positions[over]
+            allocation[capped_positions] = maximum_weight
+            remaining -= maximum_weight * len(capped_positions)
+            uncapped[capped_positions] = False
+        capped[row_position] = allocation
+    return pd.DataFrame(capped, index=weights.index, columns=weights.columns)
 
 
 def _latch_weights(

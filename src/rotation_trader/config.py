@@ -12,6 +12,7 @@ class DataConfig:
     stable_sectors: tuple[str, ...]
     extension_sectors: tuple[str, ...]
     context_tickers: tuple[str, ...]
+    cash_yield_ticker: str
     maximum_staleness_sessions: int
     minimum_primary_coverage: float
 

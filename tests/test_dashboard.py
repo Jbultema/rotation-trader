@@ -22,6 +22,15 @@ def test_dashboard_executes_without_runtime_exceptions(
             "target_weights": {"XLE": 0.5, "XLV": 0.5},
             "sector_ranks": {"XLE": 2.0, "XLV": 1.0, "XLP": 3.0},
         },
+        "allocation_timing_challenger": {
+            "family": "volatility_managed_rotation",
+            "latest_decision": {
+                "timing_stage": 1,
+                "sleeve_exposure": 0.4,
+                "target_holding_count": 3,
+                "target_weights": {"XLE": 0.1, "XLP": 0.15, "XLV": 0.15},
+            },
+        },
         "behavioral_distinctness": {
             "return_correlation": 0.8,
             "mean_weight_overlap": 0.6,
@@ -37,6 +46,7 @@ def test_dashboard_executes_without_runtime_exceptions(
     comparison = pd.DataFrame(
         {
             "rotation_candidate": 0.001,
+            "allocation_timing_challenger": 0.0009,
             "swing_sector_control": 0.0008,
             "spy_buy_hold": 0.0006,
             "equal_weight_sectors": 0.0007,
@@ -46,9 +56,9 @@ def test_dashboard_executes_without_runtime_exceptions(
     comparison.to_parquet(tmp_path / "comparison_returns.parquet")
     pd.DataFrame(
         {
-            "regime": ["forward"] * 4,
+            "regime": ["forward"] * 5,
             "strategy": comparison.columns,
-            "cagr": [0.1, 0.09, 0.08, 0.07],
+            "cagr": [0.1, 0.095, 0.09, 0.08, 0.07],
         }
     ).to_csv(tmp_path / "regime_comparison.csv", index=False)
     pd.DataFrame(
@@ -70,5 +80,5 @@ def test_dashboard_executes_without_runtime_exceptions(
 
     assert not app.exception
     assert [title.value for title in app.title] == ["Rotation Trader"]
-    assert len(app.metric) == 8
-    assert len(app.get("plotly_chart")) == 5
+    assert len(app.metric) == 12
+    assert len(app.get("plotly_chart")) == 6

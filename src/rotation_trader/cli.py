@@ -16,7 +16,7 @@ from rotation_trader.data import (
     load_price_snapshot,
 )
 from rotation_trader.research import run_research
-from rotation_trader.shadow import record_shadow_decision
+from rotation_trader.shadow import record_shadow_decisions
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -78,11 +78,12 @@ def run(
         price_manifest_path=snapshot.manifest_path,
         progress=typer.echo,
     )
-    shadow = record_shadow_decision(result.latest_dir, Path("data/shadow/decisions.jsonl"))
+    shadow = record_shadow_decisions(result.latest_dir, Path("data/shadow/decisions.jsonl"))
     typer.echo(
         f"Rotation Trader completed through {snapshot.audit.latest_session}: "
         f"selected={result.selected_variant_id}; promoted={result.promoted}; "
-        f"shadow_record={shadow['record_id']}; no order was placed."
+        f"shadow_records={','.join(str(record['record_id']) for record in shadow)}; "
+        "no order was placed."
     )
 
 
@@ -125,10 +126,11 @@ def record_shadow(
         "data/shadow/decisions.jsonl"
     ),
 ) -> None:
-    """Append one idempotent, unactionable prospective shadow decision."""
-    record = record_shadow_decision(report_dir, journal)
+    """Append idempotent selector and allocation/timing shadow decisions."""
+    records = record_shadow_decisions(report_dir, journal)
     typer.echo(
-        f"Shadow record {record['record_id']} is locked through {record['as_of_close']}; "
+        f"Shadow records {','.join(str(record['record_id']) for record in records)} are "
+        f"locked through {records[0]['as_of_close']}; "
         "no action is authorized."
     )
 

@@ -15,12 +15,19 @@ from rotation_trader.evidence import (
     annual_evidence,
     family_evidence,
     parameter_neighborhood,
+    preholdout_pareto_frontier,
     regime_evidence,
 )
 from rotation_trader.hypotheses import generate_registered_variants, registry_frame
 from rotation_trader.metrics import performance_metrics
 from rotation_trader.provenance import file_sha256, write_hashed_json
-from rotation_trader.strategy import FeatureCache, StrategyRun, VariantSpec, build_strategy
+from rotation_trader.strategy import (
+    TRADING_DAYS,
+    FeatureCache,
+    StrategyRun,
+    VariantSpec,
+    build_strategy,
+)
 from rotation_trader.validation import (
     behavioral_similarity,
     combinatorial_pbo,
@@ -68,6 +75,7 @@ def run_research(
         if ticker in prices["Close"].columns
     ]
     context_close = prices["Close"][context_symbols].reindex(close.index)
+    cash_yield = prices["Close"][config.data.cash_yield_ticker].reindex(close.index)
     common_start = max(close[ticker].first_valid_index() for ticker in sectors)
     analysis_start_position = (
         close.index.get_loc(common_start) + config.research.minimum_history_sessions
@@ -80,6 +88,7 @@ def run_research(
     benchmark_close = benchmark_close.loc[analysis_start:]
     benchmark_open = benchmark_open.loc[analysis_start:]
     context_close = context_close.loc[analysis_start:]
+    cash_returns = _cash_returns_from_annual_yield(cash_yield.loc[analysis_start:])
     if close.isna().any(axis=None) or adjusted_open.isna().any(axis=None):
         raise ValueError("Primary stable-sector history contains gaps after the research warmup.")
 
@@ -100,7 +109,13 @@ def run_research(
     swing_spec = next(
         variant for variant in variants if variant.family == "comparator_swing_dual_momentum"
     )
-    swing_run, swing_result = _run_variant(cache, adjusted_open, swing_spec, config)
+    swing_run, swing_result = _run_variant(
+        cache,
+        adjusted_open,
+        swing_spec,
+        config,
+        cash_returns=cash_returns,
+    )
 
     return_series_by_variant: dict[str, pd.Series] = {}
     turnover_series_by_variant: dict[str, pd.Series] = {}
@@ -115,7 +130,13 @@ def run_research(
         if variant == swing_spec:
             strategy_run, result = swing_run, swing_result
         else:
-            strategy_run, result = _run_variant(cache, adjusted_open, variant, config)
+            strategy_run, result = _run_variant(
+                cache,
+                adjusted_open,
+                variant,
+                config,
+                cash_returns=cash_returns,
+            )
         return_series_by_variant[variant.variant_id] = result.net_returns.astype(np.float32)
         turnover_series_by_variant[variant.variant_id] = result.one_way_turnover.astype(
             np.float32
@@ -164,6 +185,20 @@ def run_research(
         run_dir / "family_preholdout_evidence.csv",
         index=False,
     )
+    preholdout_pareto_frontier(selection_scores).to_csv(
+        run_dir / "preholdout_pareto_frontier.csv",
+        index=False,
+    )
+    wave_three_scores = selection_scores.loc[selection_scores["research_wave"].eq(3)]
+    wave_three_eligible = wave_three_scores.loc[
+        wave_three_scores["pre_holdout_gate_passed"]
+    ]
+    challenger_row = (
+        wave_three_eligible.iloc[0]
+        if not wave_three_eligible.empty
+        else wave_three_scores.iloc[0]
+    )
+    allocation_timing_challenger_id = str(challenger_row["variant_id"])
     selection_payload = {
         "schema_version": 1,
         "record_type": "frozen_preholdout_selection",
@@ -172,6 +207,10 @@ def run_research(
         "eligible_variants": selection.eligible_variants,
         "family_winners": list(selection.family_winners),
         "reason": selection.reason,
+        "allocation_timing_challenger_id": allocation_timing_challenger_id,
+        "allocation_timing_challenger_gate_passed": bool(
+            challenger_row["pre_holdout_gate_passed"]
+        ),
         "development_end": config.research.development_end,
         "validation_end": config.research.validation_end,
         "holdout_was_not_used_for_selection": True,
@@ -195,6 +234,7 @@ def run_research(
     selected_ids = set(selection.family_winners)
     if selection.selected_variant_id is not None:
         selected_ids.add(selection.selected_variant_id)
+    selected_ids.add(allocation_timing_challenger_id)
     selected_ids.update(
         registry.loc[registry["family"].str.startswith("comparator_"), "variant_id"].tolist()
     )
@@ -238,8 +278,12 @@ def run_research(
         "preholdout_eligible_variants": selection.eligible_variants,
         "pbo": pbo,
         "promotion_status": "no_preholdout_candidate",
-        "protocol_phase": "post_holdout_adversarial_wave_2",
+        "protocol_phase": "post_holdout_adversarial_wave_3",
         "eligible_for_pristine_historical_promotion": False,
+        "allocation_timing_challenger_id": allocation_timing_challenger_id,
+        "allocation_timing_challenger_preholdout_gate_passed": bool(
+            challenger_row["pre_holdout_gate_passed"]
+        ),
     }
     champion_run: StrategyRun | None = None
     champion_result: BacktestResult | None = None
@@ -252,6 +296,7 @@ def run_research(
             adjusted_open,
             champion_spec,
             config,
+            cash_returns=cash_returns,
         )
         preholdout_returns = champion_result.net_returns.loc[:preholdout_end]
         holdout_mask = period_masks(champion_result.net_returns.index, config.research)["holdout"]
@@ -310,6 +355,7 @@ def run_research(
             champion_spec,
             champion_run,
             config,
+            cash_returns,
         )
         decision = _latest_decision(champion_spec, champion_run)
         summary.update(
@@ -336,8 +382,56 @@ def run_research(
             run_dir / "champion_returns.parquet"
         )
         champion_run.diagnostics.to_parquet(run_dir / "champion_diagnostics.parquet")
+        challenger_spec = next(
+            variant
+            for variant in variants
+            if variant.variant_id == allocation_timing_challenger_id
+        )
+        challenger_run, challenger_result = _run_variant(
+            cache,
+            adjusted_open,
+            challenger_spec,
+            config,
+            cash_returns=cash_returns,
+        )
+        challenger_preholdout = challenger_result.net_returns.loc[:preholdout_end]
+        challenger_vs_swing = behavioral_similarity(
+            challenger_preholdout,
+            swing_preholdout,
+            challenger_run.target_weights.loc[:preholdout_end],
+            swing_run.target_weights.loc[:preholdout_end],
+        )
+        challenger_vs_incumbent = behavioral_similarity(
+            challenger_preholdout,
+            preholdout_returns,
+            challenger_run.target_weights.loc[:preholdout_end],
+            champion_run.target_weights.loc[:preholdout_end],
+        )
+        challenger_decision = _latest_decision(challenger_spec, challenger_run)
+        challenger_period_metrics = all_metrics.loc[
+            all_metrics["variant_id"].eq(allocation_timing_challenger_id)
+        ].to_dict(orient="records")
+        summary["allocation_timing_challenger"] = {
+            "variant_id": allocation_timing_challenger_id,
+            "family": challenger_spec.family,
+            "preholdout_gate_passed": bool(challenger_row["pre_holdout_gate_passed"]),
+            "prospective_only": True,
+            "specification": asdict(challenger_spec),
+            "latest_decision": challenger_decision,
+            "period_metrics": challenger_period_metrics,
+            "behavioral_distinctness_from_swing": challenger_vs_swing,
+            "behavioral_distinctness_from_incumbent": challenger_vs_incumbent,
+            "timing_history": _timing_history(challenger_run, config),
+        }
+        challenger_run.target_weights.to_parquet(
+            run_dir / "allocation_timing_challenger_weights.parquet"
+        )
+        challenger_run.diagnostics.to_parquet(
+            run_dir / "allocation_timing_challenger_diagnostics.parquet"
+        )
         comparison_returns = {
             "rotation_candidate": champion_result.net_returns,
+            "allocation_timing_challenger": challenger_result.net_returns,
             "swing_sector_control": swing_result.net_returns,
             "spy_buy_hold": benchmark_result.net_returns,
             "equal_weight_sectors": equal_sector_result.net_returns,
@@ -364,11 +458,13 @@ def run_research(
             "cash_weight": decision["cash_weight"],
             "leadership_state": decision["leadership_state"],
             "historical_gates_passed": historical_gates_passed,
+            "allocation_timing_challenger": summary["allocation_timing_challenger"],
             "behavioral_distinctness_from_swing_control": distinctness,
             "period_metrics": all_metrics.loc[
                 all_metrics["variant_id"].isin(
                     [
                         selection.selected_variant_id,
+                        allocation_timing_challenger_id,
                         swing_spec.variant_id,
                         "benchmark_spy_buy_hold",
                         "benchmark_equal_weight_sectors",
@@ -421,6 +517,8 @@ def _run_variant(
     adjusted_open: pd.DataFrame,
     spec: VariantSpec,
     config: AppConfig,
+    *,
+    cash_returns: pd.Series | None = None,
 ) -> tuple[StrategyRun, BacktestResult]:
     strategy_run = build_strategy(cache, spec)
     result = run_backtest(
@@ -428,6 +526,7 @@ def _run_variant(
         strategy_run.target_weights,
         one_way_cost_bps=config.execution.total_one_way_cost_bps,
         minimum_trade_weight=config.execution.minimum_trade_weight,
+        cash_returns=cash_returns,
     )
     return strategy_run, result
 
@@ -453,6 +552,7 @@ def _robustness_checks(
     spec: VariantSpec,
     run: StrategyRun,
     config: AppConfig,
+    cash_returns: pd.Series,
 ) -> dict[str, object]:
     cost_sensitivity: list[dict[str, object]] = []
     for cost in (5.0, 10.0, 20.0, 40.0):
@@ -461,6 +561,7 @@ def _robustness_checks(
             run.target_weights,
             one_way_cost_bps=cost,
             minimum_trade_weight=config.execution.minimum_trade_weight,
+            cash_returns=cash_returns,
         )
         cost_sensitivity.append(
             {"one_way_cost_bps": cost, **performance_metrics(result.net_returns)}
@@ -470,6 +571,7 @@ def _robustness_checks(
         run.target_weights.shift(1).fillna(0.0),
         one_way_cost_bps=config.execution.total_one_way_cost_bps,
         minimum_trade_weight=config.execution.minimum_trade_weight,
+        cash_returns=cash_returns,
     )
     leave_one_out: list[dict[str, object]] = []
     for removed in adjusted_open.columns:
@@ -484,6 +586,7 @@ def _robustness_checks(
             reduced_run.target_weights,
             one_way_cost_bps=config.execution.total_one_way_cost_bps,
             minimum_trade_weight=config.execution.minimum_trade_weight,
+            cash_returns=cash_returns,
         )
         leave_one_out.append(
             {"removed_sector": removed, **performance_metrics(reduced_result.net_returns)}
@@ -493,6 +596,12 @@ def _robustness_checks(
         "one_additional_session_delay": performance_metrics(delayed.net_returns),
         "leave_one_sector_out": leave_one_out,
     }
+
+
+def _cash_returns_from_annual_yield(annual_yield_percent: pd.Series) -> pd.Series:
+    known_yield = annual_yield_percent.ffill().shift(1).clip(lower=0.0)
+    daily = (1.0 + known_yield.div(100.0)).pow(1.0 / TRADING_DAYS).sub(1.0)
+    return daily.fillna(0.0).rename("cash_return")
 
 
 def _latest_decision(spec: VariantSpec, run: StrategyRun) -> dict[str, object]:
@@ -529,13 +638,40 @@ def _latest_decision(spec: VariantSpec, run: StrategyRun) -> dict[str, object]:
         "family": spec.family,
         "target_weights": targets,
         "cash_weight": float(1.0 - current.sum()),
+        "sleeve_exposure": float(current.sum()),
         "actions": actions,
         "sector_ranks": {ticker: float(rank) for ticker, rank in rankings.items()},
         "leadership_state": leadership_state,
         "breadth": breadth,
         "dispersion_z": float(diagnostics["dispersion_z"]),
         "group_rotation_signal": float(diagnostics["group_rotation_signal"]),
+        "timing_score": float(diagnostics["timing_score"]),
+        "timing_stage": int(diagnostics["timing_stage"]),
+        "timing_exposure": float(diagnostics["timing_exposure"]),
+        "target_holding_count": int(diagnostics["target_holding_count"]),
     }
+
+
+def _timing_history(run: StrategyRun, config: AppConfig) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    masks = period_masks(run.diagnostics.index, config.research)
+    exposure = run.target_weights.sum(axis=1)
+    for period, mask in masks.items():
+        index = mask[mask].index
+        diagnostics = run.diagnostics.reindex(index)
+        period_exposure = exposure.reindex(index)
+        rows.append(
+            {
+                "period": period,
+                "average_sleeve_exposure": float(period_exposure.mean()),
+                "average_cash_weight": float(1.0 - period_exposure.mean()),
+                "risk_on_share": float(diagnostics["timing_stage"].eq(3).mean()),
+                "watch_share": float(diagnostics["timing_stage"].eq(2).mean()),
+                "warning_share": float(diagnostics["timing_stage"].eq(1).mean()),
+                "defensive_share": float(diagnostics["timing_stage"].eq(0).mean()),
+            }
+        )
+    return rows
 
 
 def _render_report(summary: dict[str, object], metrics: pd.DataFrame) -> str:

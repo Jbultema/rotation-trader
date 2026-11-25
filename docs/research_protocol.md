@@ -86,3 +86,22 @@ Wave 2 adds only sector-relative mechanisms: rank-entry events, named sector-pai
 transitions, multi-signal transition confirmation, leader-crowding penalties,
 correlation-conditioned rotation-signal strength, and market-proxy echo confirmation.
 Context proxies may confirm sector leadership but may not set a broad macro risk budget.
+
+## Wave 3 allocation and timing extension
+
+Wave 3 was registered after the original holdout had been opened. It evaluates whether
+sector selection and exposure timing can operate as one native strategy rather than as a
+post-strategy overlay. Its 1,098 variants add dynamic holding counts, confidence-weighted
+and inverse-volatility allocations, sector caps, staged market confirmation, transition
+rebalances, target-volatility sizing, dispersion penalties, and faster defensive re-entry.
+
+Timing uses only completed-close market evidence: fast and slow SPY trends, sector
+breadth, and the share of sectors with positive momentum. The staged states are risk-on,
+watch, warning, and defensive, each with an explicit exposure budget. Unallocated cash
+earns a lagged public 13-week Treasury-bill yield proxy (`^IRX`); the prior completed
+close is converted from annual yield to a daily return so no contemporaneous yield leaks
+into the backtest.
+
+Wave 3 is diagnostic and prospective-only. It cannot regain a pristine historical
+holdout. A separate challenger is reported so a simple frozen selector cannot hide the
+best native allocation/timing model, but the same promotion gates remain binding.

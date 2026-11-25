@@ -33,7 +33,8 @@ period metrics, and behavioral overlap. Promotion requires return correlation be
 5. `research.py` selects using development and validation only, hashes that selection,
    then evaluates later periods.
 6. `audit.py` verifies artifact hashes and the sealed selection record.
-7. `shadow.py` appends one immutable, unactionable record per session and variant.
+7. `shadow.py` appends immutable, unactionable records for both the frozen selector and
+   the separately identified allocation/timing challenger.
 
 ## Research waves
 
@@ -41,6 +42,13 @@ Wave 1 contained the original transition families and opened the 2019-2023 holdo
 Wave 2 added adversarial mechanisms after that opening. Wave 2 results are useful for
 falsification but cannot claim a pristine holdout. Any historically successful Wave 2
 candidate requires prospective shadow validation.
+
+Wave 3 adds native portfolio construction and timing: dynamic top-N, score and
+inverse-volatility weighting, concentration caps, staged market confirmation,
+target-volatility sizing, dispersion-aware exposure, and fast re-entry. Unallocated cash
+earns the lagged `^IRX` yield. Because Wave 3 also postdates the original holdout, its
+best candidate is tracked as a separate prospective challenger and cannot be promoted
+from historical evidence alone.
 
 ## Known limits
 

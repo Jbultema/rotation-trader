@@ -1,6 +1,11 @@
 import pandas as pd
 
-from rotation_trader.evidence import annual_evidence, family_evidence, parameter_neighborhood
+from rotation_trader.evidence import (
+    annual_evidence,
+    family_evidence,
+    parameter_neighborhood,
+    preholdout_pareto_frontier,
+)
 
 
 def test_family_evidence_counts_passes() -> None:
@@ -59,3 +64,27 @@ def test_annual_evidence_compounds_daily_returns() -> None:
     result = annual_evidence({"candidate": pd.Series([0.1, -0.1], index=dates)})
 
     assert abs(result.iloc[0]["return"] + 0.01) < 1e-12
+
+
+def test_pareto_frontier_excludes_strictly_dominated_variant() -> None:
+    frame = pd.DataFrame(
+        {
+            "variant_id": ["strong", "weak"],
+            "research_wave": [3, 3],
+            "family": ["timing", "timing"],
+            "development_cagr": [0.08, 0.06],
+            "validation_cagr": [0.08, 0.06],
+            "development_sharpe_zero_rf": [0.8, 0.6],
+            "validation_sharpe_zero_rf": [0.8, 0.6],
+            "development_max_drawdown": [-0.15, -0.20],
+            "validation_max_drawdown": [-0.15, -0.20],
+            "development_annualized_turnover": [5.0, 7.0],
+            "validation_annualized_turnover": [5.0, 7.0],
+            "pre_holdout_gate_passed": [True, False],
+            "robust_score": [0.2, 0.1],
+        }
+    )
+
+    result = preholdout_pareto_frontier(frame)
+
+    assert result["variant_id"].tolist() == ["strong"]

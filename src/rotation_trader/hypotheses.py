@@ -317,6 +317,150 @@ def generate_registered_variants() -> tuple[VariantSpec, ...]:
                             **template,
                         )
                     )
+
+    timing_profiles = (
+        (0.85, 0.60, 0.25),
+        (0.75, 0.50, 0.20),
+        (0.65, 0.40, 0.00),
+    )
+    for lookbacks, momentum_weights in base_templates:
+        for cadence in cadences:
+            for weighting in ("score_softmax", "score_inverse_volatility"):
+                for temperature in (0.5, 1.0):
+                    for maximum_weight in (0.45, 0.60):
+                        for dynamic in (False, True):
+                            variants.append(
+                                VariantSpec(
+                                    family="adaptive_confidence_allocation",
+                                    momentum_lookbacks=lookbacks,
+                                    momentum_weights=momentum_weights,
+                                    top_n=3,
+                                    cadence=cadence,
+                                    weighting=weighting,
+                                    dynamic_top_n=dynamic,
+                                    minimum_holdings=2,
+                                    maximum_holdings=5,
+                                    score_temperature=temperature,
+                                    maximum_sector_weight=maximum_weight,
+                                    acceleration_weight=0.35,
+                                    rank_velocity_weight=0.35,
+                                    persistence_weight=0.30,
+                                    rank_buffer=1,
+                                )
+                            )
+
+            for weighting in ("equal", "inverse_volatility", "score_inverse_volatility"):
+                for fast_days in (42, 63):
+                    for slow_days in (150, 200):
+                        for watch, warning, defensive in timing_profiles:
+                            for transition_rebalance in (False, True):
+                                variants.append(
+                                    VariantSpec(
+                                        family="staged_market_timing",
+                                        momentum_lookbacks=lookbacks,
+                                        momentum_weights=momentum_weights,
+                                        top_n=3,
+                                        cadence=cadence,
+                                        weighting=weighting,
+                                        acceleration_weight=0.35,
+                                        rank_velocity_weight=0.35,
+                                        persistence_weight=0.30,
+                                        timing_mode="staged",
+                                        timing_fast_days=fast_days,
+                                        timing_slow_days=slow_days,
+                                        timing_confirmation_days=5,
+                                        watch_exposure=watch,
+                                        warning_exposure=warning,
+                                        defensive_exposure=defensive,
+                                        rebalance_on_timing_transition=transition_rebalance,
+                                    )
+                                )
+
+            for weighting in ("score_softmax", "score_inverse_volatility"):
+                for temperature in (0.5, 1.0):
+                    for watch, warning, defensive in timing_profiles[:2]:
+                        for drawdown_limit in (None, -0.12):
+                            for transition_rebalance in (False, True):
+                                variants.append(
+                                    VariantSpec(
+                                        family="adaptive_timed_rotation",
+                                        momentum_lookbacks=lookbacks,
+                                        momentum_weights=momentum_weights,
+                                        top_n=3,
+                                        cadence=cadence,
+                                        weighting=weighting,
+                                        dynamic_top_n=True,
+                                        minimum_holdings=2,
+                                        maximum_holdings=5,
+                                        score_temperature=temperature,
+                                        maximum_sector_weight=0.50,
+                                        acceleration_weight=0.35,
+                                        rank_velocity_weight=0.35,
+                                        persistence_weight=0.30,
+                                        timing_mode="staged",
+                                        timing_fast_days=63,
+                                        timing_slow_days=200,
+                                        timing_confirmation_days=5,
+                                        watch_exposure=watch,
+                                        warning_exposure=warning,
+                                        defensive_exposure=defensive,
+                                        market_drawdown_limit=drawdown_limit,
+                                        rebalance_on_timing_transition=transition_rebalance,
+                                    )
+                                )
+
+            for confirmation_days in (3, 5, 10):
+                for fast_days in (42, 63):
+                    for drawdown_limit in (None, -0.10, -0.15):
+                        for weighting in ("inverse_volatility", "score_inverse_volatility"):
+                            variants.append(
+                                VariantSpec(
+                                    family="fast_defensive_reentry",
+                                    momentum_lookbacks=lookbacks,
+                                    momentum_weights=momentum_weights,
+                                    top_n=3,
+                                    cadence=cadence,
+                                    weighting=weighting,
+                                    acceleration_weight=0.35,
+                                    rank_velocity_weight=0.35,
+                                    timing_mode="staged",
+                                    timing_fast_days=fast_days,
+                                    timing_slow_days=150,
+                                    timing_confirmation_days=confirmation_days,
+                                    watch_exposure=0.75,
+                                    warning_exposure=0.50,
+                                    defensive_exposure=0.0,
+                                    market_drawdown_limit=drawdown_limit,
+                                    rebalance_on_timing_transition=True,
+                                )
+                            )
+
+        for weighting in ("equal", "inverse_volatility", "score_inverse_volatility"):
+            for target_volatility in (0.10, 0.13, 0.16):
+                for dispersion_penalty in (0.0, 0.25, 0.50):
+                    for staged in (False, True):
+                        variants.append(
+                            VariantSpec(
+                                family="volatility_managed_rotation",
+                                momentum_lookbacks=lookbacks,
+                                momentum_weights=momentum_weights,
+                                top_n=3,
+                                cadence="monthly",
+                                weighting=weighting,
+                                acceleration_weight=0.35,
+                                rank_velocity_weight=0.35,
+                                persistence_weight=0.30,
+                                target_volatility=target_volatility,
+                                dispersion_penalty=dispersion_penalty,
+                                timing_mode="staged" if staged else "binary",
+                                timing_fast_days=63,
+                                timing_slow_days=200,
+                                timing_confirmation_days=5,
+                                watch_exposure=0.75,
+                                warning_exposure=0.50,
+                                defensive_exposure=0.20,
+                            )
+                        )
     unique = {variant.variant_id: variant for variant in variants}
     return tuple(unique[key] for key in sorted(unique))
 
@@ -331,10 +475,21 @@ def registry_frame(variants: tuple[VariantSpec, ...]) -> pd.DataFrame:
         "context_echo_confirmation",
         "adversarial_transition_ensemble",
     }
+    wave_three_families = {
+        "adaptive_confidence_allocation",
+        "staged_market_timing",
+        "adaptive_timed_rotation",
+        "fast_defensive_reentry",
+        "volatility_managed_rotation",
+    }
     rows = [
         {
             "variant_id": variant.variant_id,
-            "research_wave": 2 if variant.family in wave_two_families else 1,
+            "research_wave": 3
+            if variant.family in wave_three_families
+            else 2
+            if variant.family in wave_two_families
+            else 1,
             **asdict(variant),
         }
         for variant in variants

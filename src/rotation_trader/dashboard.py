@@ -60,7 +60,7 @@ allocation = px.bar(
 )
 allocation.update_layout(showlegend=False, height=300, margin={"l": 10, "r": 10, "t": 20, "b": 10})
 allocation.update_xaxes(tickformat=".0%", range=[0, 1])
-left.plotly_chart(allocation, use_container_width=True)
+left.plotly_chart(allocation, width="stretch")
 
 ranks = pd.Series(decision["sector_ranks"], dtype=float).sort_values()
 rank_chart = px.bar(
@@ -75,7 +75,47 @@ rank_chart.update_yaxes(autorange="reversed", dtick=1)
 rank_chart.update_layout(
     height=300, margin={"l": 10, "r": 10, "t": 20, "b": 10}, coloraxis_showscale=False
 )
-right.plotly_chart(rank_chart, use_container_width=True)
+right.plotly_chart(rank_chart, width="stretch")
+
+challenger = summary.get("allocation_timing_challenger")
+if isinstance(challenger, dict):
+    challenger_decision = challenger["latest_decision"]
+    st.subheader("Allocation and Timing Challenger")
+    timing_labels = {3: "Risk On", 2: "Watch", 1: "Warning", 0: "Defensive"}
+    challenger_metrics = st.columns(4)
+    challenger_metrics[0].metric("Family", str(challenger["family"]).replace("_", " ").title())
+    challenger_metrics[1].metric(
+        "Timing stage",
+        timing_labels[int(challenger_decision["timing_stage"])],
+    )
+    challenger_metrics[2].metric(
+        "Sleeve exposure",
+        _percent(float(challenger_decision["sleeve_exposure"])),
+    )
+    challenger_metrics[3].metric(
+        "Target holdings",
+        str(int(challenger_decision["target_holding_count"])),
+    )
+    challenger_targets = pd.Series(
+        challenger_decision["target_weights"],
+        dtype=float,
+    ).sort_values(ascending=True)
+    challenger_chart = px.bar(
+        challenger_targets.rename_axis("sector").reset_index(name="weight"),
+        x="weight",
+        y="sector",
+        orientation="h",
+        color="sector",
+        color_discrete_sequence=px.colors.qualitative.Safe,
+        labels={"weight": "Target weight", "sector": "Sector"},
+    )
+    challenger_chart.update_layout(
+        showlegend=False,
+        height=300,
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+    )
+    challenger_chart.update_xaxes(tickformat=".0%", range=[0, 1])
+    st.plotly_chart(challenger_chart, width="stretch")
 
 st.subheader("Candidate vs Controls")
 comparison = pd.read_parquet(REPORT_DIR / "comparison_returns.parquet").fillna(0.0)
@@ -92,6 +132,7 @@ growth = growth.div(growth.iloc[0])
 equity = go.Figure()
 palette = {
     "rotation_candidate": "#0072B2",
+    "allocation_timing_challenger": "#CC79A7",
     "swing_sector_control": "#E69F00",
     "spy_buy_hold": "#009E73",
     "equal_weight_sectors": "#6B7280",
@@ -111,7 +152,7 @@ equity.update_layout(
     margin={"l": 10, "r": 10, "t": 20, "b": 10},
     legend={"orientation": "h", "y": -0.2},
 )
-st.plotly_chart(equity, use_container_width=True)
+st.plotly_chart(equity, width="stretch")
 
 distinct = summary["behavioral_distinctness"]
 comparison_cols = st.columns(3)
@@ -140,7 +181,7 @@ regime_chart = px.bar(
 )
 regime_chart.update_yaxes(tickformat=".0%")
 regime_chart.update_layout(height=430, margin={"l": 10, "r": 10, "t": 20, "b": 10})
-st.plotly_chart(regime_chart, use_container_width=True)
+st.plotly_chart(regime_chart, width="stretch")
 
 st.subheader("Research Robustness")
 family = pd.read_csv(REPORT_DIR / "family_preholdout_evidence.csv")
@@ -162,14 +203,14 @@ family_chart = px.scatter(
     },
 )
 family_chart.update_layout(height=400, margin={"l": 10, "r": 10, "t": 20, "b": 10})
-st.plotly_chart(family_chart, use_container_width=True)
+st.plotly_chart(family_chart, width="stretch")
 
 gates = pd.Series(summary["promotion_gates"], name="passed").rename_axis("gate").reset_index()
 gates["status"] = gates["passed"].map({True: "Passed", False: "Failed"})
 st.dataframe(
     gates[["gate", "status"]],
     hide_index=True,
-    use_container_width=True,
+    width="stretch",
     column_config={"gate": "Historical gate", "status": "Status"},
 )
 

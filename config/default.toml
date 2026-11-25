@@ -4,6 +4,7 @@ benchmark = "SPY"
 stable_sectors = ["XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY"]
 extension_sectors = ["XLC", "XLRE"]
 context_tickers = ["RSP", "IWM", "QQQ", "SMH", "HYG", "LQD", "IEF", "TLT", "DBC", "GLD", "UUP"]
+cash_yield_ticker = "^IRX"
 maximum_staleness_sessions = 2
 minimum_primary_coverage = 0.98
 

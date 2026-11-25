@@ -54,6 +54,20 @@ PARAMETER_COLUMNS = (
     "correlation_rotation_scale",
     "context_echo_days",
     "context_echo_weight",
+    "dynamic_top_n",
+    "minimum_holdings",
+    "maximum_holdings",
+    "score_temperature",
+    "maximum_sector_weight",
+    "timing_mode",
+    "timing_fast_days",
+    "timing_slow_days",
+    "timing_confirmation_days",
+    "watch_exposure",
+    "warning_exposure",
+    "defensive_exposure",
+    "market_drawdown_limit",
+    "rebalance_on_timing_transition",
 )
 
 
@@ -88,6 +102,48 @@ def family_evidence(selection_scores: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(
         ["preholdout_gate_pass_rate", "best_robust_score"],
         ascending=[False, False],
+    )
+
+
+def preholdout_pareto_frontier(selection_scores: pd.DataFrame) -> pd.DataFrame:
+    candidates = selection_scores.loc[
+        ~selection_scores["family"].str.startswith("comparator_")
+    ].copy()
+    candidates["cagr_floor"] = candidates[
+        ["development_cagr", "validation_cagr"]
+    ].min(axis=1)
+    candidates["sharpe_floor"] = candidates[
+        ["development_sharpe_zero_rf", "validation_sharpe_zero_rf"]
+    ].min(axis=1)
+    candidates["drawdown_floor"] = candidates[
+        ["development_max_drawdown", "validation_max_drawdown"]
+    ].min(axis=1)
+    candidates["turnover_ceiling"] = candidates[
+        ["development_annualized_turnover", "validation_annualized_turnover"]
+    ].max(axis=1)
+    objectives = candidates[
+        ["cagr_floor", "sharpe_floor", "drawdown_floor", "turnover_ceiling"]
+    ].to_numpy(dtype=float)
+    objectives[:, 3] *= -1.0
+    frontier = np.ones(len(candidates), dtype=bool)
+    for position, row in enumerate(objectives):
+        at_least_as_good = np.all(objectives >= row, axis=1)
+        strictly_better = np.any(objectives > row, axis=1)
+        frontier[position] = not bool(np.any(at_least_as_good & strictly_better))
+    columns = [
+        "variant_id",
+        "research_wave",
+        "family",
+        "cagr_floor",
+        "sharpe_floor",
+        "drawdown_floor",
+        "turnover_ceiling",
+        "pre_holdout_gate_passed",
+        "robust_score",
+    ]
+    return candidates.loc[frontier, columns].sort_values(
+        ["cagr_floor", "sharpe_floor"],
+        ascending=False,
     )
 
 
