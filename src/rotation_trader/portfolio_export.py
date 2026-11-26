@@ -130,6 +130,7 @@ def export_bundle(output):
             "Frozen specifications are rebuilt under corrected planned-period scheduling; old cached targets are not silently reused.",
             "Sector funds are surviving ETFs with evolving classifications.",
             "Common replay uses self-financing drift and does not inherit native execution assumptions.",
+            "Native execution now funds fees and holds units between changed targets; legacy archives require accounting rebaseline.",
         ],
         "rotation_primary",
     )

@@ -16,8 +16,10 @@ def test_equal_sector_comparator_is_long_only_and_fully_invested() -> None:
 
     result = _equal_sector_backtest(opens, cost_bps=0.0)
 
-    assert result.weights_at_open.iloc[1:].sum(axis=1).eq(1.0).all()
+    np.testing.assert_allclose(result.weights_at_open.iloc[1:].sum(axis=1), 1., atol=1e-12)
     assert result.weights_at_open.min().min() >= 0.0
+    assert result.one_way_turnover.iloc[2:].eq(0).all()
+    assert result.weights_at_open.iloc[-1, 0] > 0.5
 
 
 def test_cash_returns_use_only_prior_completed_yield() -> None:

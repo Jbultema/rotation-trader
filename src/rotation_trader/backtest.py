@@ -28,7 +28,11 @@ def run_backtest(
     minimum_trade_weight: float = 0.0,
     cash_returns: pd.Series | None = None,
 ) -> BacktestResult:
-    """Execute close-known targets at the next open and value open to open."""
+    """Fund changed close-known targets at the next open; otherwise hold units.
+
+    Weights drift between decisions. Fees reduce NAV before sizing the new
+    basket, including a fully invested basket; no external cash funds fees.
+    """
     opens = adjusted_open.astype(float)
     if (
         opens.empty or not isinstance(opens.index, pd.DatetimeIndex)
@@ -49,35 +53,63 @@ def run_backtest(
     target = target_at_close.reindex(columns=opens.columns, fill_value=0.0).astype(float)
     _validate_targets(target)
 
-    weights = target.shift(1).fillna(0.0)
-    if minimum_trade_weight > 0:
-        weights = _apply_no_trade_band(weights, minimum_trade_weight)
-    # Per-instrument bands can otherwise retain old positions while adding new
-    # ones and silently produce a leveraged long-only portfolio.
-    _validate_targets(weights)
-    risky_changes = weights.diff().fillna(weights)
-    turnover = risky_changes.abs().sum(axis=1)
-    cost = turnover * (one_way_cost_bps / 10_000.0)
-
-    open_returns = opens.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
-    held_during_interval = weights.shift(1).fillna(0.0)
-    if (held_during_interval.gt(1e-12) & open_returns.isna()).any(axis=None):
-        raise BacktestError("Unpriced held interval; no missing-return substitution.")
-    if (weights.gt(1e-12) & opens.isna()).any(axis=None):
-        raise BacktestError("Unpriced target holding.")
-    gross = (held_during_interval * open_returns).sum(axis=1, min_count=1).fillna(0.0)
-    cash_weight = (1.0 - held_during_interval.sum(axis=1)).clip(lower=0.0, upper=1.0)
-    if cash_returns is not None:
-        cash = cash_returns.reindex(gross.index)
-        if not np.isfinite(cash).all() or cash.le(-1).any():
-            raise BacktestError("Cash returns must be finite and aligned.")
-        gross = gross.add(
-            cash_weight * cash,
-            fill_value=0.0,
-        )
-    net = gross - cost
-    equity = (1.0 + net).cumprod()
-    return BacktestResult(net, gross, equity, weights, turnover, cost)
+    desired = target.shift(1).fillna(0.0).to_numpy(float)
+    quotes = opens.to_numpy(float)
+    cash = np.zeros(len(opens)) if cash_returns is None else cash_returns.reindex(opens.index).to_numpy(float)
+    if not np.isfinite(cash).all() or np.any(cash <= -1):
+        raise BacktestError("Cash returns must be finite and aligned.")
+    held = np.zeros(len(opens.columns))
+    previous_target = np.zeros(len(opens.columns))
+    cash_value = nav = 1.0
+    rows, net, gross, turnover, costs = [], [], [], [], []
+    rate = one_way_cost_bps / 10000.0
+    for i, requested in enumerate(desired):
+        prior_nav = nav
+        if i:
+            valid = np.isfinite(quotes[i]) & np.isfinite(quotes[i - 1])
+            if np.any((held > 1e-12) & ~valid):
+                raise BacktestError("Unpriced held interval; no missing-return substitution.")
+            growth = np.ones(len(held))
+            np.divide(quotes[i], quotes[i - 1], out=growth, where=valid)
+            held *= growth
+            cash_value *= 1.0 + cash[i]
+        pre = float(held.sum() + cash_value)
+        gross.append(pre / prior_nav - 1.0)
+        traded = fee = 0.0
+        if not np.allclose(requested, previous_target, atol=1e-12, rtol=0):
+            drifted = held / pre
+            changed = np.abs(requested - drifted) >= minimum_trade_weight
+            candidate = np.where(changed, requested, drifted)
+            # Partial baskets can retain old risk while adding new positions.
+            if candidate.sum() > 1.0 + 1e-12:
+                candidate = requested.copy()
+                changed[:] = True
+            if changed.any():
+                if np.any(((candidate > 1e-12) | (held > 1e-12)) & ~np.isfinite(quotes[i])):
+                    raise BacktestError("Unpriced target holding.")
+                post = pre
+                for _ in range(24):
+                    post = pre - rate * np.abs(candidate * post - held).sum()
+                assets = candidate * post
+                traded = float(np.abs(assets - held).sum() / pre)
+                fee = pre - post
+                held = assets
+                cash_value = post - float(held.sum())
+            previous_target = requested.copy()
+        nav = float(held.sum() + cash_value)
+        if not np.isfinite(nav) or nav <= 0 or cash_value < -1e-10:
+            raise BacktestError("Self-financing invariant failed.")
+        rows.append(held / nav)
+        net.append(nav / prior_nav - 1.0)
+        turnover.append(traded)
+        costs.append(fee / pre)
+    index = opens.index
+    returns = pd.Series(net, index=index)
+    return BacktestResult(
+        returns, pd.Series(gross, index=index), returns.add(1).cumprod(),
+        pd.DataFrame(rows, index=index, columns=opens.columns),
+        pd.Series(turnover, index=index), pd.Series(costs, index=index),
+    )
 
 
 def _validate_targets(target: pd.DataFrame) -> None:
@@ -87,17 +119,3 @@ def _validate_targets(target: pd.DataFrame) -> None:
         raise BacktestError("Short positions are not allowed.")
     if (target.sum(axis=1) > 1.0 + 1e-9).any():
         raise BacktestError("Gross risky-asset exposure cannot exceed 100%.")
-
-
-def _apply_no_trade_band(weights: pd.DataFrame, threshold: float) -> pd.DataFrame:
-    desired = weights.to_numpy(dtype=float)
-    result = np.zeros(desired.shape, dtype=float)
-    previous = np.zeros(desired.shape[1], dtype=float)
-    for position in range(len(weights.index)):
-        changed = np.abs(desired[position] - previous) >= threshold
-        candidate = np.where(changed, desired[position], previous)
-        # A partially applied basket is not guaranteed to remain funded. In
-        # that case execute the complete desired basket, costing every trade.
-        previous = desired[position].copy() if candidate.sum() > 1.0 + 1e-9 else candidate
-        result[position] = previous
-    return pd.DataFrame(result, index=weights.index, columns=weights.columns)
