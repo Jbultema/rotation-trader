@@ -73,7 +73,7 @@ def run(output, legacy_ref):
                                 "extra_delay": delay, "period": period,
                                 **performance_metrics(result.net_returns.loc[left:right], turnover=result.one_way_turnover)})
     pd.DataFrame(rows).to_csv(output / "metrics.csv", index=False)
-    bound = [Path(__file__), Path("src/rotation_trader/backtest.py"), Path("config/default.toml"),
+    bound = [Path(__file__), *sorted(Path("src/rotation_trader").rglob("*.py")), Path("config/default.toml"),
              source / "run_manifest.json", source / "research_summary.json", price_manifest]
     (output / "manifest.json").write_text(json.dumps({"sources": {str(p): sha(p) for p in bound},
         "artifacts": {p.name: sha(p) for p in output.iterdir()}, "paths": len(rows)//3,
