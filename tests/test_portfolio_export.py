@@ -81,3 +81,17 @@ def test_tampered_native_selection_cannot_be_exported(tmp_path):
         file.write(b"tamper")
     with pytest.raises(ValueError, match="integrity"):
         research_targets(p, config, tmp_path)
+
+
+def test_interpretation_reconciles_and_distinguishes_pending_timing(tmp_path):
+    from rotation_trader.interpretation_export import signals
+
+    config, p = inputs(tmp_path)
+    spec = json.loads((tmp_path / "research_summary.json").read_text())["selected_specification"]
+    result = signals(p["Close"], config, spec)
+    expected = research_targets(p, config, tmp_path)["rotation_primary"][0].reindex(result.index)
+    target_columns = [c for c in result if c.startswith("target_") and c[7:] in expected]
+    pd.testing.assert_frame_equal(result[target_columns].rename(columns=lambda c: c[7:]), expected)
+    pd.testing.assert_frame_equal(result.loc[:p.index[417]], signals(p["Close"].iloc[:418], config, spec))
+    pending = result.timing_exposure.lt(result.target_exposure - .001) & ~result.scheduled
+    assert result.loc[pending, "reason"].eq("timing_warning_waiting_for_native_rebalance").all()
