@@ -83,15 +83,27 @@ def research_targets(prices, config, source_dir):
     return output
 
 
-def export_bundle(output):
+def export_bundle(output, *, price_manifest=None):
     import hashlib
     import json
 
     config = load_config("config/default.toml")
+    explicit_manifest = price_manifest is not None
     source_dir = Path("reports/latest")
     run = json.loads((source_dir / "run_manifest.json").read_text())
-    manifest_path = Path(run["price_manifest"])
-    if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != run["price_manifest_sha256"]:
+    frozen_pointer = Path("reports/frozen-daily/latest.json")
+    expected_hash = run["price_manifest_sha256"]
+    if price_manifest is None and frozen_pointer.exists():
+        daily = json.loads(frozen_pointer.read_text())
+        if daily.get("price_manifest"):
+            if daily.get("frozen_research_sha256") != hashlib.sha256((source_dir / "run_manifest.json").read_bytes()).hexdigest():
+                raise ValueError("Frozen daily selection no longer matches native research")
+            price_manifest = Path(daily["price_manifest"])
+            expected_hash = daily["price_manifest_sha256"]
+    manifest_path = Path(price_manifest or run["price_manifest"])
+    if explicit_manifest:
+        expected_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != expected_hash:
         raise ValueError("Native price manifest hash mismatch")
     metadata = json.loads(manifest_path.read_text())
     source = manifest_path.parent / metadata["data_file"]
